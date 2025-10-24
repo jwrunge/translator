@@ -10,6 +10,11 @@ interface CachedEntry {
 	updatedAt: number;
 }
 
+type InvalidateFn = (currentDate: Date) => Promise<string[]> | string[];
+type IndexedDBFactoryExtended = IDBFactory & {
+	databases?: () => Promise<Array<{ name?: string | undefined }>>;
+};
+
 const TRANSLATING_CLASS = "transmut-translating";
 const STORE_NAME = "translations";
 
@@ -22,6 +27,7 @@ export default class TranslationObserver {
 	#dbPromise: Promise<IDBDatabase | null> | null = null;
 	#dbInstance: IDBDatabase | null = null;
 	#expiryMs: number | null;
+	#initPromise: Promise<void>;
 
 	#transBatch = new Set<string>();
 	#nodeStates = new Map<
@@ -35,7 +41,8 @@ export default class TranslationObserver {
 		defaultLangCode = "en",
 		locale?: string,
 		getTranslations?: GetTransMapFn,
-		expiryHours?: number
+		expiryHours?: number,
+		invalidateFn?: InvalidateFn
 	) {
 		/**
 		 * Abort if not a DOM environment
@@ -73,6 +80,15 @@ export default class TranslationObserver {
 				.split("-");
 		}
 
+		const [defaultLang, defaultRegion] = defaultLangCode
+			.toLocaleLowerCase()
+			.split("-");
+		this.#defaultLanguage = defaultLang;
+		this.#defaultRegion = defaultRegion ?? "";
+		this.#langCode = defaultLang;
+		this.#region = defaultRegion ?? "";
+		this.#initPromise = this.#runInitialInvalidation(invalidateFn);
+
 		// Add translation class
 		rootNode.classList.add(TRANSLATING_CLASS);
 		this.changeLocale().then(() =>
@@ -87,12 +103,6 @@ export default class TranslationObserver {
 			typeof expiryHours === "number" && expiryHours > 0
 				? expiryHours * 60 * 60 * 1000
 				: null;
-
-		[this.#langCode, this.#region] = defaultLangCode
-			.toLocaleLowerCase()
-			.split("-");
-		this.#defaultLanguage = this.#langCode;
-		this.#defaultRegion = this.#defaultRegion;
 
 		/**
 		 * Observe text nodes
@@ -132,6 +142,8 @@ export default class TranslationObserver {
 	}
 
 	async changeLocale(langCode = ``, region = ``) {
+		await this.#initPromise;
+
 		const nextLang = langCode || this.#defaultLanguage;
 		const nextRegion = region || this.#defaultRegion;
 		const nextDbName = this.#composeDbName(nextLang, nextRegion);
@@ -178,6 +190,8 @@ export default class TranslationObserver {
 		if (batch.length === 0) {
 			return;
 		}
+
+		await this.#initPromise;
 
 		const cachedEntries = await this.#getCachedTranslations(batch);
 		const resolved: TranslationMap = {};
@@ -290,6 +304,118 @@ export default class TranslationObserver {
 	#composeDbName(lang: string, region: string): string {
 		const regionPart = region ? region : "default";
 		return `transmut.${lang}.${regionPart}`;
+	}
+
+	async #runInitialInvalidation(invalidateFn?: InvalidateFn): Promise<void> {
+		if (!invalidateFn) {
+			return;
+		}
+
+		if (typeof indexedDB === "undefined") {
+			return;
+		}
+
+		try {
+			const maybeKeys = await invalidateFn(new Date());
+			const keys = Array.isArray(maybeKeys)
+				? Array.from(
+						new Set(
+							maybeKeys.filter(
+								(key): key is string =>
+									typeof key === "string" && key.length > 0
+							)
+						)
+				  )
+				: [];
+
+			if (keys.length === 0) {
+				return;
+			}
+
+			const dbNames = await this.#collectTranslationDbNames();
+			await Promise.all(
+				dbNames.map((name) => this.#deleteKeysFromDb(name, keys))
+			);
+		} catch (error) {
+			console.error("transmut: invalidate callback failed", error);
+		}
+	}
+
+	async #collectTranslationDbNames(): Promise<string[]> {
+		if (typeof indexedDB === "undefined") {
+			return [];
+		}
+
+		const factory = indexedDB as IndexedDBFactoryExtended;
+		const names = new Set<string>();
+
+		if (typeof factory.databases === "function") {
+			try {
+				const databases = await factory.databases();
+				for (const info of databases) {
+					const name = info?.name;
+					if (name && name.startsWith("transmut.")) {
+						names.add(name);
+					}
+				}
+			} catch (error) {
+				console.warn(
+					"transmut: unable to enumerate IndexedDB databases",
+					error
+				);
+			}
+		}
+
+		names.add(this.#composeDbName(this.#langCode, this.#region));
+		names.add(
+			this.#composeDbName(this.#defaultLanguage, this.#defaultRegion)
+		);
+
+		return Array.from(names).filter((name) => name.length > 0);
+	}
+
+	async #deleteKeysFromDb(dbName: string, keys: string[]): Promise<void> {
+		if (keys.length === 0) {
+			return;
+		}
+
+		await new Promise<void>((resolve) => {
+			const request = indexedDB.open(dbName, 1);
+
+			request.onupgradeneeded = () => {
+				const db = request.result;
+				if (!db.objectStoreNames.contains(STORE_NAME)) {
+					db.createObjectStore(STORE_NAME);
+				}
+			};
+
+			request.onerror = () => resolve();
+
+			request.onsuccess = () => {
+				const db = request.result;
+				const tx = db.transaction(STORE_NAME, "readwrite");
+				const store = tx.objectStore(STORE_NAME);
+
+				for (const key of keys) {
+					store.delete(key);
+				}
+
+				tx.oncomplete = () => {
+					db.close();
+					resolve();
+				};
+
+				tx.onabort = () => {
+					db.close();
+					resolve();
+				};
+
+				tx.onerror = () => {
+					db.close();
+					resolve();
+				};
+			};
+		});
 	}
 
 	async #getDb(): Promise<IDBDatabase | null> {
