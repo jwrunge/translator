@@ -6,6 +6,7 @@ type GetTransMapFn = (
 ) => AsyncTransMap;
 
 const TRANSLATING_CLASS = "transmut-translating";
+const STORE_NAME = "translations";
 
 export default class {
 	#mutObserver: MutationObserver;
@@ -13,6 +14,8 @@ export default class {
 	#defaultRegion = "";
 	#langCode: string;
 	#region: string;
+	#dbPromise: Promise<IDBDatabase | null> | null = null;
+	#dbInstance: IDBDatabase | null = null;
 
 	#transBatch = new Set<string>();
 	#nodeStates = new Map<
@@ -23,10 +26,9 @@ export default class {
 	#getTranslations: GetTransMapFn;
 
 	constructor(
-		getTranslationCache: () => AsyncTransMap,
-		getTranslations: GetTransMapFn,
 		defaultLangCode = "en",
-		locale?: string
+		locale?: string,
+		getTranslations?: GetTransMapFn
 	) {
 		/**
 		 * Abort if not a DOM environment
@@ -69,7 +71,7 @@ export default class {
 		/**
 		 * Set translation functions and langcodes
 		 */
-		this.#getTranslations = getTranslations;
+		this.#getTranslations = getTranslations ?? (async () => ({}));
 
 		[this.#langCode, this.#region] = defaultLangCode
 			.toLocaleLowerCase()
@@ -115,8 +117,18 @@ export default class {
 	}
 
 	async changeLocale(langCode = ``, region = ``) {
-		this.#langCode = langCode || this.#defaultLanguage;
-		this.#region = region;
+		const nextLang = langCode || this.#defaultLanguage;
+		const nextRegion = region || this.#defaultRegion;
+		const nextDbName = this.#composeDbName(nextLang, nextRegion);
+		const db = this.#dbInstance;
+		if (db && db.name !== nextDbName) {
+			db.close();
+		}
+
+		this.#dbInstance = null;
+		this.#dbPromise = null;
+		this.#langCode = nextLang;
+		this.#region = nextRegion;
 	}
 
 	#handlePotentialText = (node: Node): void => {
@@ -152,15 +164,33 @@ export default class {
 			return;
 		}
 
-		let transMap: TranslationMap = await this.#getTranslations(
-			{ langCode: this.#langCode, region: this.#region },
-			batch
-		);
+		const cached = await this.#getCachedTranslations(batch);
+		const missing = batch.filter((key) => !cached[key]);
+		let fetched: TranslationMap = {};
 
-		if (typeof transMap === "string") {
-			transMap = JSON.parse(transMap) as TranslationMap;
+		if (missing.length > 0) {
+			const fetchedRaw = await this.#getTranslations(
+				{ langCode: this.#langCode, region: this.#region },
+				missing
+			);
+
+			if (typeof fetchedRaw === "string") {
+				try {
+					fetched = JSON.parse(fetchedRaw) as TranslationMap;
+				} catch (error) {
+					console.error("Failed to parse translation payload", error);
+					fetched = {};
+				}
+			} else {
+				fetched = fetchedRaw ?? {};
+			}
+
+			if (Object.keys(fetched).length > 0) {
+				await this.#persistTranslations(fetched);
+			}
 		}
 
+		const resolved: TranslationMap = { ...cached, ...fetched };
 		const requested = new Set(batch);
 
 		for (const [node, state] of this.#nodeStates.entries()) {
@@ -178,7 +208,7 @@ export default class {
 				continue;
 			}
 
-			const translatedText = transMap[state.pendingSource];
+			const translatedText = resolved[state.pendingSource];
 			if (translatedText && translatedText !== currentText) {
 				node.textContent = translatedText;
 				state.translated = true;
@@ -204,4 +234,138 @@ export default class {
 			this.#cleanupNode(child);
 		}
 	};
+
+	#composeDbName(lang: string, region: string): string {
+		const regionPart = region ? region : "default";
+		return `transmut.${lang}.${regionPart}`;
+	}
+
+	async #getDb(): Promise<IDBDatabase | null> {
+		if (typeof indexedDB === "undefined") {
+			return null;
+		}
+
+		if (this.#dbInstance) {
+			return this.#dbInstance;
+		}
+
+		if (this.#dbPromise) {
+			return this.#dbPromise;
+		}
+
+		const dbName = this.#composeDbName(this.#langCode, this.#region);
+		this.#dbPromise = new Promise<IDBDatabase | null>((resolve, reject) => {
+			const request = indexedDB.open(dbName, 1);
+
+			request.onupgradeneeded = () => {
+				const db = request.result;
+				if (!db.objectStoreNames.contains(STORE_NAME)) {
+					db.createObjectStore(STORE_NAME);
+				}
+			};
+
+			request.onsuccess = () => {
+				const db = request.result;
+				db.onversionchange = () => {
+					db.close();
+					if (this.#dbInstance === db) {
+						this.#dbInstance = null;
+					}
+				};
+				this.#dbInstance = db;
+				resolve(db);
+			};
+
+			request.onerror = () => {
+				this.#dbPromise = null;
+				reject(request.error ?? new Error("Failed to open IndexedDB"));
+			};
+
+			request.onblocked = () => {
+				console.warn(
+					`transmut: database ${dbName} upgrade blocked. Close other tabs to continue.`
+				);
+			};
+		});
+
+		try {
+			return await this.#dbPromise;
+		} catch (error) {
+			console.error("transmut: unable to open IndexedDB", error);
+			return null;
+		} finally {
+			this.#dbPromise = null;
+		}
+	}
+
+	async #getCachedTranslations(keys: string[]): Promise<TranslationMap> {
+		const db = await this.#getDb();
+		if (!db || keys.length === 0) {
+			return {};
+		}
+
+		const tx = db.transaction(STORE_NAME, "readonly");
+		const store = tx.objectStore(STORE_NAME);
+		const result: TranslationMap = {};
+
+		await Promise.all(
+			keys.map(
+				(key) =>
+					new Promise<void>((resolve) => {
+						const request = store.get(key);
+						request.onsuccess = () => {
+							const value = request.result as string | undefined;
+							if (typeof value === "string") {
+								result[key] = value;
+							}
+							resolve();
+						};
+						request.onerror = () => resolve();
+					})
+			)
+		);
+
+		return result;
+	}
+
+	async #persistTranslations(map: TranslationMap): Promise<void> {
+		const entries = Object.entries(map).filter(
+			([, value]) => typeof value === "string" && value.length > 0
+		);
+		if (entries.length === 0) {
+			return;
+		}
+
+		const db = await this.#getDb();
+		if (!db) {
+			return;
+		}
+
+		const tx = db.transaction(STORE_NAME, "readwrite");
+		const store = tx.objectStore(STORE_NAME);
+
+		const completion = new Promise<void>((resolve, reject) => {
+			tx.oncomplete = () => resolve();
+			tx.onabort = () =>
+				reject(tx.error ?? new Error("Transaction aborted"));
+			tx.onerror = () =>
+				reject(tx.error ?? new Error("Transaction failed"));
+		});
+
+		await Promise.all(
+			entries.map(
+				([key, value]) =>
+					new Promise<void>((resolve, reject) => {
+						const request = store.put(value, key);
+
+						request.onsuccess = () => resolve();
+						request.onerror = () => reject(request.error);
+					})
+			)
+		);
+
+		await completion.catch((error: unknown) => {
+			console.error("transmut: failed to commit translations", error);
+		});
+	}
 }
