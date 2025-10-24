@@ -3,10 +3,6 @@
 	"private": true,
 	"version": "0.0.0",
 	"type": "module",
-	"scripts": {
-		"build": "tsc",
-		"preview": "vite preview"
-	},
 	"devDependencies": {
 		"@types/node": "^22.7.5",
 		"typescript": "~5.9.3"
