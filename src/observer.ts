@@ -5,10 +5,15 @@ type GetTransMapFn = (
 	from: string[]
 ) => AsyncTransMap;
 
+interface CachedEntry {
+	value: string;
+	updatedAt: number;
+}
+
 const TRANSLATING_CLASS = "transmut-translating";
 const STORE_NAME = "translations";
 
-export default class {
+export default class TranslationObserver {
 	#mutObserver: MutationObserver;
 	#defaultLanguage = "en";
 	#defaultRegion = "";
@@ -16,6 +21,7 @@ export default class {
 	#region: string;
 	#dbPromise: Promise<IDBDatabase | null> | null = null;
 	#dbInstance: IDBDatabase | null = null;
+	#expiryMs: number | null;
 
 	#transBatch = new Set<string>();
 	#nodeStates = new Map<
@@ -28,7 +34,8 @@ export default class {
 	constructor(
 		defaultLangCode = "en",
 		locale?: string,
-		getTranslations?: GetTransMapFn
+		getTranslations?: GetTransMapFn,
+		expiryHours?: number
 	) {
 		/**
 		 * Abort if not a DOM environment
@@ -72,6 +79,10 @@ export default class {
 		 * Set translation functions and langcodes
 		 */
 		this.#getTranslations = getTranslations ?? (async () => ({}));
+		this.#expiryMs =
+			typeof expiryHours === "number" && expiryHours > 0
+				? expiryHours * 60 * 60 * 1000
+				: null;
 
 		[this.#langCode, this.#region] = defaultLangCode
 			.toLocaleLowerCase()
@@ -164,33 +175,65 @@ export default class {
 			return;
 		}
 
-		const cached = await this.#getCachedTranslations(batch);
-		const missing = batch.filter((key) => !cached[key]);
+		const cachedEntries = await this.#getCachedTranslations(batch);
+		const resolved: TranslationMap = {};
+		const missingKeys: string[] = [];
+		const staleKeys: string[] = [];
+		const now = Date.now();
+		const expiryMs = this.#expiryMs;
+
+		for (const key of batch) {
+			const entry = cachedEntries[key];
+			if (!entry) {
+				missingKeys.push(key);
+				continue;
+			}
+
+			resolved[key] = entry.value;
+			if (
+				expiryMs !== null &&
+				expiryMs >= 0 &&
+				now - entry.updatedAt >= expiryMs
+			) {
+				staleKeys.push(key);
+			}
+		}
+
+		const isOffline =
+			typeof navigator !== "undefined" ? navigator.onLine === false : false;
+		const keysNeedingFetch = isOffline
+			? []
+			: Array.from(new Set([...missingKeys, ...staleKeys]));
 		let fetched: TranslationMap = {};
 
-		if (missing.length > 0) {
-			const fetchedRaw = await this.#getTranslations(
-				{ langCode: this.#langCode, region: this.#region },
-				missing
-			);
+		if (keysNeedingFetch.length > 0) {
+			try {
+				const fetchedRaw = await this.#getTranslations(
+					{ langCode: this.#langCode, region: this.#region },
+					keysNeedingFetch
+				);
 
-			if (typeof fetchedRaw === "string") {
-				try {
-					fetched = JSON.parse(fetchedRaw) as TranslationMap;
-				} catch (error) {
-					console.error("Failed to parse translation payload", error);
-					fetched = {};
+				if (typeof fetchedRaw === "string") {
+					try {
+						fetched = JSON.parse(fetchedRaw) as TranslationMap;
+					} catch (error) {
+						console.error("Failed to parse translation payload", error);
+						fetched = {};
+					}
+				} else {
+					fetched = fetchedRaw ?? {};
 				}
-			} else {
-				fetched = fetchedRaw ?? {};
+			} catch (error) {
+				console.error("transmut: fetching translations failed", error);
+				fetched = {};
 			}
 
 			if (Object.keys(fetched).length > 0) {
 				await this.#persistTranslations(fetched);
+				Object.assign(resolved, fetched);
 			}
 		}
 
-		const resolved: TranslationMap = { ...cached, ...fetched };
 		const requested = new Set(batch);
 
 		for (const [node, state] of this.#nodeStates.entries()) {
@@ -298,7 +341,7 @@ export default class {
 		}
 	}
 
-	async #getCachedTranslations(keys: string[]): Promise<TranslationMap> {
+	async #getCachedTranslations(keys: string[]): Promise<Record<string, CachedEntry>> {
 		const db = await this.#getDb();
 		if (!db || keys.length === 0) {
 			return {};
@@ -306,7 +349,7 @@ export default class {
 
 		const tx = db.transaction(STORE_NAME, "readonly");
 		const store = tx.objectStore(STORE_NAME);
-		const result: TranslationMap = {};
+		const result: Record<string, CachedEntry> = {};
 
 		await Promise.all(
 			keys.map(
@@ -314,9 +357,22 @@ export default class {
 					new Promise<void>((resolve) => {
 						const request = store.get(key);
 						request.onsuccess = () => {
-							const value = request.result as string | undefined;
-							if (typeof value === "string") {
-								result[key] = value;
+							const raw = request.result;
+							if (typeof raw === "string") {
+								result[key] = { value: raw, updatedAt: 0 };
+							} else if (
+								raw &&
+								typeof raw === "object" &&
+								typeof (raw as CachedEntry).value === "string"
+							) {
+								const entry = raw as CachedEntry;
+								result[key] = {
+									value: entry.value,
+									updatedAt:
+										typeof entry.updatedAt === "number"
+											? entry.updatedAt
+											: 0,
+								};
 							}
 							resolve();
 						};
@@ -356,7 +412,13 @@ export default class {
 			entries.map(
 				([key, value]) =>
 					new Promise<void>((resolve, reject) => {
-						const request = store.put(value, key);
+						const request = store.put(
+							{
+								value,
+								updatedAt: Date.now(),
+							},
+							key
+						);
 
 						request.onsuccess = () => resolve();
 						request.onerror = () => reject(request.error);
