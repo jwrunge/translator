@@ -1,22 +1,11 @@
-export type TranslationFn = (
-	input: string,
-	node: Text
-) => string | Promise<string>;
+type TranslationMap = Record<string, string>;
+type AsyncTransMap = TranslationMap | Promise<TranslationMap>;
+type GetTransMapFn = (
+	translation: { langCode: string; region?: string },
+	from: string[]
+) => AsyncTransMap;
 
-export interface TextTranslationObserverOptions {
-	root?: Node;
-	processExisting?: boolean;
-	filter?: (node: Text) => boolean;
-	onError?: (error: unknown, node: Text) => void;
-}
-
-interface NodeState {
-	lastSource: string;
-	lastTranslated: string;
-	inFlight?: Promise<void>;
-}
-
-type TranslationCache = Record<string, { value: string; edited?: boolean }>;
+const TRANSLATING_CLASS = "transmut-translating";
 
 export class TranslationObserver {
 	#mutObserver: MutationObserver;
@@ -24,40 +13,23 @@ export class TranslationObserver {
 	#defaultRegion = "";
 	#langCode: string;
 	#region: string;
-	#currentTranslation: Promise<TranslationCache> | TranslationCache = {};
+	#currentTranslation: AsyncTransMap = {};
 
-	#nodeStates = new WeakMap<Text, NodeState>(); // Tracks the last processed text per node to avoid translation loops.
+	#transBatch = new Set<string>();
+	#nodeStates = new WeakMap<
+		Node,
+		{ translated: boolean; lastText: string }
+	>();
 
-	#getTranslationCache: (
-		lanCode: string,
-		region?: string
-	) => Promise<TranslationCache> | TranslationCache;
-	#getTranslation: (
-		translation: { langCode: string; region?: string },
-		from: string
-	) => Promise<string> | string;
+	#getTranslationCache: (lanCode: string, region?: string) => AsyncTransMap;
+	#getTranslations: GetTransMapFn;
 
 	constructor(
-		translate: TranslationFn,
+		getTranslationCache: () => AsyncTransMap,
+		getTranslations: GetTransMapFn,
 		defaultLangCode = "en",
-		getTranslationCache: () => Promise<TranslationCache> | TranslationCache,
-		getTranslation: (
-			translation: { langCode: string; region?: string },
-			from: string
-		) => Promise<string> | string,
-		options: TextTranslationObserverOptions = {},
 		locale?: string
 	) {
-		// Set translation functions and langcodes
-		this.#getTranslationCache = getTranslationCache;
-		this.#getTranslation = getTranslation;
-
-		[this.#langCode, this.#region] = defaultLangCode
-			.toLocaleLowerCase()
-			.split("-");
-		this.#defaultLanguage = this.#langCode;
-		this.#defaultRegion = this.#defaultRegion;
-
 		/**
 		 * Abort if not a DOM environment
 		 */
@@ -67,11 +39,7 @@ export class TranslationObserver {
 			);
 		}
 
-		const rootNode =
-			options.root ??
-			(typeof document !== "undefined"
-				? document.body ?? document
-				: undefined);
+		const rootNode = document?.body;
 
 		if (!rootNode) {
 			throw new Error("Unable to determine a root node to observe.");
@@ -82,7 +50,7 @@ export class TranslationObserver {
 		}
 
 		/**
-		 * Set langCode and region from locale
+		 * Set langCode and region from locale and initialize
 		 */
 		if (locale) {
 			const [lang, region] = locale.toLowerCase().split("-");
@@ -94,41 +62,44 @@ export class TranslationObserver {
 				.split("-");
 		}
 
+		// Add translation class
+		rootNode.classList.add(TRANSLATING_CLASS);
+		this.changeLocale().then(() =>
+			rootNode.classList.remove(TRANSLATING_CLASS)
+		);
+
+		/**
+		 * Set translation functions and langcodes
+		 */
+		this.#getTranslationCache = getTranslationCache;
+		this.#getTranslations = getTranslations;
+
+		[this.#langCode, this.#region] = defaultLangCode
+			.toLocaleLowerCase()
+			.split("-");
+		this.#defaultLanguage = this.#langCode;
+		this.#defaultRegion = this.#defaultRegion;
+
 		/**
 		 * Observe text nodes
 		 */
-		const { processExisting = true, onError } = options;
-
-		const handlePotentialText = (node: Node): void => {
-			if (node.nodeType === Node.TEXT_NODE) {
-				scheduleTranslation(node as Text);
-				return;
-			}
-
-			for (const child of node.childNodes) {
-				handlePotentialText(child);
-			}
-		};
-
-		if (processExisting) {
-			handlePotentialText(rootNode);
-		}
-
 		this.#mutObserver = new MutationObserver((mutations) => {
+			this.#transBatch.clear();
+
 			for (const mutation of mutations) {
-				if (
-					mutation.type === "characterData" &&
-					mutation.target.nodeType === Node.TEXT_NODE
-				) {
-					scheduleTranslation(mutation.target as Text);
+				if (mutation.type === "characterData") {
+					this.#handlePotentialText(mutation.target);
+					continue;
 				}
 
 				if (mutation.type === "childList") {
 					for (const added of mutation.addedNodes) {
-						handlePotentialText(added);
+						this.#handlePotentialText(added);
 					}
 				}
 			}
+
+			this.#translate();
 		});
 
 		this.#mutObserver.observe(rootNode, {
@@ -138,19 +109,17 @@ export class TranslationObserver {
 		});
 	}
 
-	async changeLocale(langCode = ``) {
-		const [code, region] = langCode.split(`-`);
-
+	async changeLocale(langCode = ``, region = ``) {
 		if (
-			(code === this.#defaultLanguage && !region) ||
+			(langCode === this.#defaultLanguage && !region) ||
 			region === this.#defaultRegion
 		)
 			this.#currentTranslation = {};
-		else if (code)
+		else if (langCode)
 			try {
 				const translationCacheFromBackend =
-					await this.#getTranslationCache(code, region);
-				const newTranslation: TranslationCache =
+					await this.#getTranslationCache(langCode, region);
+				const newTranslation: TranslationMap =
 					typeof translationCacheFromBackend === "string"
 						? JSON.parse(translationCacheFromBackend)
 						: translationCacheFromBackend;
@@ -165,77 +134,57 @@ export class TranslationObserver {
 			}
 	}
 
-	scheduleTranslation = async (node: Text) => {
-		const currentText = node.textContent ?? "";
-		const existingState = this.#nodeStates.get(node);
+	#handlePotentialText = (node: Node): void => {
+		if (node.nodeType === Node.TEXT_NODE) {
+			if (node.textContent) {
+				const oldState = this.#nodeStates.get(node);
+				if (
+					oldState?.translated &&
+					oldState.lastText === node.textContent
+				)
+					return;
 
-		if (existingState?.inFlight) {
-			if (
-				existingState.lastSource === currentText ||
-				existingState.lastTranslated === currentText
-			) {
-				return;
+				this.#transBatch.add(node.textContent || ``);
+				this.#nodeStates.set(node, {
+					translated: false,
+					lastText: node.textContent,
+				});
 			}
-		}
-
-		if (existingState && existingState.lastTranslated === currentText) {
 			return;
 		}
 
-		if (
-			existingState &&
-			existingState.lastSource === currentText &&
-			!existingState.inFlight
-		) {
-			return;
+		for (const child of node.childNodes) {
+			this.#handlePotentialText(child);
 		}
+	};
 
-		const state: NodeState = existingState ?? {
-			lastSource: currentText,
-			lastTranslated: currentText,
-		};
-
-		state.lastSource = currentText;
-
-		const translated = await this.#getTranslation(
+	#translate = async (): Promise<void> => {
+		let transMap: TranslationMap = await this.#getTranslations(
 			{ langCode: this.#langCode, region: this.#region },
-			currentText
+			Array.from(this.#transBatch)
 		);
 
-		const inFlight = Promise.resolve()
-			.then(() => translate(currentText, node))
-			.then((translated) => {
-				if (translated == null) {
-					return;
-				}
+		if (typeof transMap === "string") {
+			transMap = JSON.parse(transMap) as TranslationMap;
+		}
 
-				const latestText = node.textContent ?? "";
-				if (latestText !== currentText) {
-					return;
-				}
+		for (const [node, state] of this.#nodeStates) {
+			if (state.status !== "inflight") continue;
 
-				if (translated !== latestText) {
-					node.textContent = translated;
-				}
+			const translatedText = translationMap[state.untranslated];
 
-				state.lastTranslated = translated;
-			})
-			.catch((error) => {
-				state.lastTranslated = state.lastTranslated ?? currentText;
-				if (onError) {
-					onError(error, node);
-				} else {
-					console.error(
-						"observeTextTranslations: translation failed",
-						error
-					);
-				}
-			})
-			.finally(() => {
-				state.inFlight = undefined;
-			});
-
-		state.inFlight = inFlight;
-		this.#nodeStates.set(node, state);
+			if (translatedText) {
+				node.textContent = translatedText;
+				this.#nodeStates.set(node, {
+					status: "translated",
+					untranslated: state.untranslated,
+				});
+			} else {
+				this.#nodeStates.set(node, {
+					status: "translated",
+					untranslated: state.untranslated,
+				});
+			}
+		}
 	};
 }
