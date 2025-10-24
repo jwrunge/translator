@@ -56,6 +56,10 @@ export default class TranslationObserver {
 			throw new Error("Unable to access navigator language settings.");
 		}
 
+		if (!getTranslations) {
+			throw new Error("A getTranslations function must be provided.");
+		}
+
 		/**
 		 * Set langCode and region from locale and initialize
 		 */
@@ -78,7 +82,7 @@ export default class TranslationObserver {
 		/**
 		 * Set translation functions and langcodes
 		 */
-		this.#getTranslations = getTranslations ?? (async () => ({}));
+		this.#getTranslations = getTranslations;
 		this.#expiryMs =
 			typeof expiryHours === "number" && expiryHours > 0
 				? expiryHours * 60 * 60 * 1000
@@ -200,7 +204,9 @@ export default class TranslationObserver {
 		}
 
 		const isOffline =
-			typeof navigator !== "undefined" ? navigator.onLine === false : false;
+			typeof navigator !== "undefined"
+				? navigator.onLine === false
+				: false;
 		const keysNeedingFetch = isOffline
 			? []
 			: Array.from(new Set([...missingKeys, ...staleKeys]));
@@ -217,7 +223,10 @@ export default class TranslationObserver {
 					try {
 						fetched = JSON.parse(fetchedRaw) as TranslationMap;
 					} catch (error) {
-						console.error("Failed to parse translation payload", error);
+						console.error(
+							"Failed to parse translation payload",
+							error
+						);
 						fetched = {};
 					}
 				} else {
@@ -341,7 +350,9 @@ export default class TranslationObserver {
 		}
 	}
 
-	async #getCachedTranslations(keys: string[]): Promise<Record<string, CachedEntry>> {
+	async #getCachedTranslations(
+		keys: string[]
+	): Promise<Record<string, CachedEntry>> {
 		const db = await this.#getDb();
 		if (!db || keys.length === 0) {
 			return {};
