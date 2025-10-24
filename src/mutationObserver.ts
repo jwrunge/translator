@@ -16,9 +16,9 @@ export class TranslationObserver {
 	#currentTranslation: AsyncTransMap = {};
 
 	#transBatch = new Set<string>();
-	#nodeStates = new WeakMap<
-		Node,
-		{ translated: boolean; lastText: string }
+	#nodeStates = new Map<
+		Text,
+		{ translated: boolean; lastText: string; pendingSource?: string }
 	>();
 
 	#getTranslationCache: (lanCode: string, region?: string) => AsyncTransMap;
@@ -96,10 +96,18 @@ export class TranslationObserver {
 					for (const added of mutation.addedNodes) {
 						this.#handlePotentialText(added);
 					}
+
+					for (const removed of mutation.removedNodes) {
+						this.#cleanupNode(removed);
+					}
 				}
 			}
 
-			this.#translate();
+			const batch = Array.from(this.#transBatch);
+			this.#transBatch.clear();
+			if (batch.length > 0) {
+				void this.#translate(batch);
+			}
 		});
 
 		this.#mutObserver.observe(rootNode, {
@@ -136,20 +144,24 @@ export class TranslationObserver {
 
 	#handlePotentialText = (node: Node): void => {
 		if (node.nodeType === Node.TEXT_NODE) {
-			if (node.textContent) {
-				const oldState = this.#nodeStates.get(node);
-				if (
-					oldState?.translated &&
-					oldState.lastText === node.textContent
-				)
-					return;
+			const textNode = node as Text;
+			const content = textNode.textContent ?? ``;
+			const existing = this.#nodeStates.get(textNode);
 
-				this.#transBatch.add(node.textContent || ``);
-				this.#nodeStates.set(node, {
-					translated: false,
-					lastText: node.textContent,
-				});
+			if (existing?.translated && existing.lastText === content) {
+				return; // Skip nodes we just translated.
 			}
+
+			if (content.length === 0) {
+				return;
+			}
+
+			this.#transBatch.add(content);
+			this.#nodeStates.set(textNode, {
+				translated: false,
+				lastText: content,
+				pendingSource: content,
+			});
 			return;
 		}
 
@@ -158,33 +170,61 @@ export class TranslationObserver {
 		}
 	};
 
-	#translate = async (): Promise<void> => {
+	#translate = async (batch: string[]): Promise<void> => {
+		if (batch.length === 0) {
+			return;
+		}
+
 		let transMap: TranslationMap = await this.#getTranslations(
 			{ langCode: this.#langCode, region: this.#region },
-			Array.from(this.#transBatch)
+			batch
 		);
 
 		if (typeof transMap === "string") {
 			transMap = JSON.parse(transMap) as TranslationMap;
 		}
 
-		for (const [node, state] of this.#nodeStates) {
-			if (state.status !== "inflight") continue;
+		const requested = new Set(batch);
 
-			const translatedText = translationMap[state.untranslated];
-
-			if (translatedText) {
-				node.textContent = translatedText;
-				this.#nodeStates.set(node, {
-					status: "translated",
-					untranslated: state.untranslated,
-				});
-			} else {
-				this.#nodeStates.set(node, {
-					status: "translated",
-					untranslated: state.untranslated,
-				});
+		for (const [node, state] of this.#nodeStates.entries()) {
+			if (!state.pendingSource || !requested.has(state.pendingSource)) {
+				continue;
 			}
+
+			const currentText = node.textContent ?? ``;
+			if (currentText !== state.pendingSource) {
+				// Text changed again before we could apply the translation; leave for the next cycle.
+				state.translated = false;
+				state.lastText = currentText;
+				state.pendingSource = undefined;
+				this.#nodeStates.set(node, state);
+				continue;
+			}
+
+			const translatedText = transMap[state.pendingSource];
+			if (translatedText && translatedText !== currentText) {
+				node.textContent = translatedText;
+				state.translated = true;
+				state.lastText = translatedText;
+				state.pendingSource = undefined;
+				this.#nodeStates.set(node, state);
+			} else {
+				state.translated = true;
+				state.lastText = currentText;
+				state.pendingSource = undefined;
+				this.#nodeStates.set(node, state);
+			}
+		}
+	};
+
+	#cleanupNode = (node: Node): void => {
+		if (node.nodeType === Node.TEXT_NODE) {
+			this.#nodeStates.delete(node as Text);
+			return;
+		}
+
+		for (const child of node.childNodes) {
+			this.#cleanupNode(child);
 		}
 	};
 }
