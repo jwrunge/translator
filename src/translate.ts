@@ -1,4 +1,4 @@
-/* eslint-disable no-console */
+// https://www.npmjs.com/package/translate
 
 import {
 	existsSync,
