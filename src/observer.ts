@@ -7,13 +7,12 @@ type GetTransMapFn = (
 
 const TRANSLATING_CLASS = "transmut-translating";
 
-export class TranslationObserver {
+export default class {
 	#mutObserver: MutationObserver;
 	#defaultLanguage = "en";
 	#defaultRegion = "";
 	#langCode: string;
 	#region: string;
-	#currentTranslation: AsyncTransMap = {};
 
 	#transBatch = new Set<string>();
 	#nodeStates = new Map<
@@ -21,7 +20,6 @@ export class TranslationObserver {
 		{ translated: boolean; lastText: string; pendingSource?: string }
 	>();
 
-	#getTranslationCache: (lanCode: string, region?: string) => AsyncTransMap;
 	#getTranslations: GetTransMapFn;
 
 	constructor(
@@ -71,7 +69,6 @@ export class TranslationObserver {
 		/**
 		 * Set translation functions and langcodes
 		 */
-		this.#getTranslationCache = getTranslationCache;
 		this.#getTranslations = getTranslations;
 
 		[this.#langCode, this.#region] = defaultLangCode
@@ -118,28 +115,8 @@ export class TranslationObserver {
 	}
 
 	async changeLocale(langCode = ``, region = ``) {
-		if (
-			(langCode === this.#defaultLanguage && !region) ||
-			region === this.#defaultRegion
-		)
-			this.#currentTranslation = {};
-		else if (langCode)
-			try {
-				const translationCacheFromBackend =
-					await this.#getTranslationCache(langCode, region);
-				const newTranslation: TranslationMap =
-					typeof translationCacheFromBackend === "string"
-						? JSON.parse(translationCacheFromBackend)
-						: translationCacheFromBackend;
-
-				if (newTranslation) this.#currentTranslation = newTranslation;
-			} catch {
-				console.error(
-					`Could not load translation for ${langCode}${
-						region ? `-${region}` : ``
-					}`
-				);
-			}
+		this.#langCode = langCode || this.#defaultLanguage;
+		this.#region = region;
 	}
 
 	#handlePotentialText = (node: Node): void => {
