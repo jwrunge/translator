@@ -17,6 +17,8 @@ interface TranslationObserverOptions {
 	setLanguageAttributes?: boolean;
 	direction?: DirectionSetting;
 	directionOverrides?: Record<string, "ltr" | "rtl">;
+	variablePattern?: RegExp;
+	variableNameGroup?: number;
 }
 
 interface ResolvedObserverOptions {
@@ -28,6 +30,8 @@ interface ResolvedObserverOptions {
 	setLanguageAttributes: boolean;
 	direction: DirectionSetting;
 	directionOverrides: Record<string, "ltr" | "rtl">;
+	variablePattern: RegExp;
+	variableNameGroup: number;
 }
 
 interface AttributeState {
@@ -116,6 +120,8 @@ const DEFAULT_DIRECTION_OVERRIDES: Record<string, "ltr" | "rtl"> = {
 	yi: "rtl",
 };
 
+const DEFAULT_VARIABLE_PATTERN = /\${\s*([^}]+?)\s*}/g;
+
 const DATA_DIRECTIVE_SKIP_VALUES = new Set([
 	"false",
 	"off",
@@ -166,8 +172,9 @@ export default class TranslationObserver {
 
 	// Regex patterns for normalizing dynamic content
 	#numberPattern = /\b\d+(?:\.\d+)?\b/g;
-	#variableNamePattern = /\${\s*([^}]+?)\s*}/g;
 	#placeholderToken = "{}";
+	#variablePattern: RegExp;
+	#variableNameGroup: number;
 
 	constructor(
 		defaultLangCode = "en",
@@ -178,6 +185,8 @@ export default class TranslationObserver {
 		options?: TranslationObserverOptions
 	) {
 		this.#options = this.#resolveOptions(options);
+		this.#variablePattern = this.#cloneRegex(this.#options.variablePattern);
+		this.#variableNameGroup = this.#options.variableNameGroup;
 
 		/**
 		 * Abort if not a DOM environment
@@ -976,6 +985,21 @@ export default class TranslationObserver {
 
 		const requireExplicitOptIn = options?.requireExplicitOptIn ?? false;
 
+		const variablePatternInput =
+			options?.variablePattern ?? DEFAULT_VARIABLE_PATTERN;
+		const variablePattern = this.#cloneRegex(variablePatternInput);
+
+		let variableNameGroup = 1;
+		if (
+			typeof options?.variableNameGroup === "number" &&
+			Number.isFinite(options.variableNameGroup)
+		) {
+			variableNameGroup = Math.floor(options.variableNameGroup);
+		}
+		if (variableNameGroup < 0) {
+			variableNameGroup = 0;
+		}
+
 		return {
 			requireExplicitOptIn,
 			textSelector:
@@ -988,7 +1012,16 @@ export default class TranslationObserver {
 			setLanguageAttributes: options?.setLanguageAttributes ?? true,
 			direction: options?.direction ?? "auto",
 			directionOverrides,
+			variablePattern,
+			variableNameGroup,
 		};
+	}
+
+	#cloneRegex(pattern: RegExp): RegExp {
+		const flags = pattern.flags.includes("g")
+			? pattern.flags
+			: `${pattern.flags}g`;
+		return new RegExp(pattern.source, flags);
 	}
 
 	/**
@@ -1054,13 +1087,24 @@ export default class TranslationObserver {
 	#collectDynamicMatches(text: string): DynamicFragmentMatch[] {
 		const matches: DynamicFragmentMatch[] = [];
 
-		this.#variableNamePattern.lastIndex = 0;
+		this.#variablePattern.lastIndex = 0;
 		let variableMatch: RegExpExecArray | null;
-		while (
-			(variableMatch = this.#variableNamePattern.exec(text)) !== null
-		) {
+		while ((variableMatch = this.#variablePattern.exec(text)) !== null) {
 			const raw = variableMatch[0];
-			const name = this.#sanitizeVariableName(variableMatch[1] ?? "");
+			let captureValue: string | undefined;
+			if (
+				this.#variableNameGroup >= 0 &&
+				this.#variableNameGroup < variableMatch.length
+			) {
+				const candidate = variableMatch[this.#variableNameGroup];
+				if (typeof candidate === "string") {
+					captureValue = candidate;
+				}
+			}
+			let name = this.#sanitizeVariableName(captureValue);
+			if (!name) {
+				name = this.#sanitizeVariableName(raw);
+			}
 			matches.push({
 				type: "variable",
 				raw,
