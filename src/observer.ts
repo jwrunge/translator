@@ -2,7 +2,8 @@ type TranslationMap = Record<string, string>;
 type AsyncTransMap = TranslationMap | Promise<TranslationMap>;
 type GetTransMapFn = (
 	translation: { langCode: string; region?: string },
-	from: string[]
+	from: string[],
+	currentUrl?: string
 ) => AsyncTransMap;
 
 interface CachedEntry {
@@ -32,10 +33,20 @@ export default class TranslationObserver {
 	#transBatch = new Set<string>();
 	#nodeStates = new Map<
 		Text,
-		{ translated: boolean; lastText: string; pendingSource?: string }
+		{
+			translated: boolean;
+			lastText: string;
+			pendingSource?: string;
+			normalizedKey?: string;
+		}
 	>();
 
 	#getTranslations: GetTransMapFn;
+
+	// Regex patterns for normalizing dynamic content
+	#numberPattern = /\b\d+(?:\.\d+)?\b/g;
+	#variablePattern = /\${[^}]*}/g;
+	#placeholderToken = "{}";
 
 	constructor(
 		defaultLangCode = "en",
@@ -158,6 +169,59 @@ export default class TranslationObserver {
 		this.#region = nextRegion;
 	}
 
+	/**
+	 * Normalizes text content by replacing numbers and template variables with placeholders
+	 * This allows the same base translation to be reused for dynamic content
+	 */
+	#normalizeText = (
+		text: string
+	): { normalized: string; hasVariables: boolean; hasNumbers: boolean } => {
+		let normalized = text;
+		let hasVariables = false;
+		let hasNumbers = false;
+
+		// Replace template variables like ${variable} with {}
+		if (this.#variablePattern.test(text)) {
+			hasVariables = true;
+			normalized = normalized.replace(
+				this.#variablePattern,
+				this.#placeholderToken
+			);
+		}
+
+		// Replace numbers with {}
+		if (this.#numberPattern.test(normalized)) {
+			hasNumbers = true;
+			normalized = normalized.replace(
+				this.#numberPattern,
+				this.#placeholderToken
+			);
+		}
+
+		return { normalized, hasVariables, hasNumbers };
+	};
+
+	/**
+	 * Reconstructs translated text by replacing placeholders with original dynamic values
+	 */
+	#reconstructText = (
+		translatedBase: string,
+		originalText: string
+	): string => {
+		const originalNumbers = originalText.match(this.#numberPattern) || [];
+		const originalVariables =
+			originalText.match(this.#variablePattern) || [];
+
+		let result = translatedBase;
+
+		// Replace placeholders with original values in order
+		[...originalVariables, ...originalNumbers].forEach((value) => {
+			result = result.replace(this.#placeholderToken, value);
+		});
+
+		return result;
+	};
+
 	#handlePotentialText = (node: Node): void => {
 		if (node.nodeType === Node.TEXT_NODE) {
 			const textNode = node as Text;
@@ -172,11 +236,21 @@ export default class TranslationObserver {
 				return;
 			}
 
-			this.#transBatch.add(content);
+			// Normalize the text to handle dynamic content
+			const { normalized, hasVariables, hasNumbers } =
+				this.#normalizeText(content);
+
+			// Use normalized text as the translation key if it has dynamic content
+			const translationKey =
+				hasVariables || hasNumbers ? normalized : content;
+
+			this.#transBatch.add(translationKey);
 			this.#nodeStates.set(textNode, {
 				translated: false,
 				lastText: content,
-				pendingSource: content,
+				pendingSource: translationKey,
+				normalizedKey:
+					hasVariables || hasNumbers ? normalized : undefined,
 			});
 			return;
 		}
@@ -230,7 +304,8 @@ export default class TranslationObserver {
 			try {
 				const fetchedRaw = await this.#getTranslations(
 					{ langCode: this.#langCode, region: this.#region },
-					keysNeedingFetch
+					keysNeedingFetch,
+					window.location.href
 				);
 
 				if (typeof fetchedRaw === "string") {
@@ -265,26 +340,34 @@ export default class TranslationObserver {
 			}
 
 			const currentText = node.textContent ?? ``;
-			if (currentText !== state.pendingSource) {
+			if (currentText !== state.lastText) {
 				// Text changed again before we could apply the translation; leave for the next cycle.
 				state.translated = false;
 				state.lastText = currentText;
 				state.pendingSource = undefined;
+				state.normalizedKey = undefined;
 				this.#nodeStates.set(node, state);
 				continue;
 			}
 
-			const translatedText = resolved[state.pendingSource];
-			if (translatedText && translatedText !== currentText) {
-				node.textContent = translatedText;
+			const translatedBase = resolved[state.pendingSource];
+			if (translatedBase && translatedBase !== currentText) {
+				// If this was normalized text with dynamic content, reconstruct it
+				const finalTranslation = state.normalizedKey
+					? this.#reconstructText(translatedBase, state.lastText)
+					: translatedBase;
+
+				node.textContent = finalTranslation;
 				state.translated = true;
-				state.lastText = translatedText;
+				state.lastText = finalTranslation;
 				state.pendingSource = undefined;
+				state.normalizedKey = undefined;
 				this.#nodeStates.set(node, state);
 			} else {
 				state.translated = true;
 				state.lastText = currentText;
 				state.pendingSource = undefined;
+				state.normalizedKey = undefined;
 				this.#nodeStates.set(node, state);
 			}
 		}
