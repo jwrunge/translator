@@ -136,6 +136,15 @@ const DATA_DIRECTIVE_INCLUDE_VALUES = new Set([
 	"all",
 ]);
 
+const BOOLEAN_FALSE_VALUES = new Set([
+	"false",
+	"off",
+	"no",
+	"0",
+	"none",
+	"exclude",
+]);
+
 export default class TranslationObserver {
 	#mutObserver: MutationObserver;
 	#defaultLanguage = "en";
@@ -626,7 +635,7 @@ export default class TranslationObserver {
 
 	#resolveAttributeTargets(element: Element): string[] {
 		const directive = this.#findTransmutDirective(element);
-		if (directive === "skip") {
+		if (directive === "skip" || this.#hasSkipAttribute(element)) {
 			return [];
 		}
 
@@ -706,8 +715,15 @@ export default class TranslationObserver {
 
 		if (
 			normalizedAttribute === "data-transmut" ||
-			normalizedAttribute === "data-transmut-attrs"
+			normalizedAttribute === "data-transmut-attrs" ||
+			normalizedAttribute === "data-transmut-skip"
 		) {
+			if (
+				normalizedAttribute === "data-transmut-skip" &&
+				this.#hasSkipAttribute(element)
+			) {
+				this.#cleanupNode(element);
+			}
 			this.#queueAttributesForElement(element);
 			this.#handlePotentialText(element);
 			this.#handlePotentialAttributes(element);
@@ -863,6 +879,10 @@ export default class TranslationObserver {
 	#findTransmutDirective(element: Element): "include" | "skip" | null {
 		let current: Element | null = element;
 		while (current) {
+			if (this.#hasSkipAttribute(current)) {
+				return "skip";
+			}
+
 			if (current.hasAttribute("data-transmut")) {
 				const directive = this.#parseTransmutDirective(
 					current.getAttribute("data-transmut")
@@ -875,6 +895,20 @@ export default class TranslationObserver {
 		}
 
 		return null;
+	}
+
+	#hasSkipAttribute(element: Element): boolean {
+		const attr = element.getAttribute("data-transmut-skip");
+		if (attr === null) {
+			return false;
+		}
+
+		const normalized = attr.trim().toLowerCase();
+		if (normalized.length === 0) {
+			return true;
+		}
+
+		return !BOOLEAN_FALSE_VALUES.has(normalized);
 	}
 
 	#parseTransmutDirective(

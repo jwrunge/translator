@@ -39,6 +39,11 @@ This example shows how to opt-in elements, translate attributes, and work with s
 			<section data-transmut-locale="fr-CA">
 				<p>Bonjour! Cette section reste en français.</p>
 			</section>
+
+			<!-- Opt out of translation for a subtree -->
+			<section data-transmut-skip>
+				<p>This block remains in the source language.</p>
+			</section>
 		</main>
 
 		<script type="module">
@@ -104,6 +109,7 @@ This example shows how to opt-in elements, translate attributes, and work with s
 **Key ideas**
 
 -   `data-transmut="include"` opts a subtree into translation when `requireExplicitOptIn` is `true`.
+-   `data-transmut-skip` disables translation for an element and all of its descendants.
 -   `data-transmut-attrs` lists attribute names that should be translated on a specific element.
 -   `data-transmut-{name}` binds placeholder values (e.g. `${name}`) so the observer can reinsert dynamic content after translation.
 -   Language metadata (`lang`, `dir`, `data-transmut-lang`, `data-transmut-dir`) is applied automatically to observed roots and locale overrides.
