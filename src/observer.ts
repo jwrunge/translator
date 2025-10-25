@@ -6,6 +6,43 @@ type GetTransMapFn = (
 	currentUrl?: string
 ) => AsyncTransMap;
 
+type DirectionSetting = "ltr" | "rtl" | "auto";
+
+interface TranslationObserverOptions {
+	requireExplicitOptIn?: boolean;
+	textSelector?: string | null;
+	attributeSelector?: string | null;
+	attributeNames?: string[];
+	skipEditable?: boolean;
+	setLanguageAttributes?: boolean;
+	direction?: DirectionSetting;
+	directionOverrides?: Record<string, "ltr" | "rtl">;
+}
+
+interface ResolvedObserverOptions {
+	requireExplicitOptIn: boolean;
+	textSelector: string | null;
+	attributeSelector: string | null;
+	attributeNames: string[];
+	skipEditable: boolean;
+	setLanguageAttributes: boolean;
+	direction: DirectionSetting;
+	directionOverrides: Record<string, "ltr" | "rtl">;
+}
+
+interface AttributeState {
+	translated: boolean;
+	lastValue: string;
+	pendingSource?: string;
+	normalizedKey?: string;
+}
+
+interface SectionLocaleDirective {
+	localeTag?: string;
+	direction?: "ltr" | "rtl";
+	skipTranslation: boolean;
+}
+
 interface CachedEntry {
 	value: string;
 	updatedAt: number;
@@ -18,6 +55,51 @@ type IndexedDBFactoryExtended = IDBFactory & {
 
 const TRANSLATING_CLASS = "transmut-translating";
 const STORE_NAME = "translations";
+
+const DEFAULT_ATTRIBUTE_NAMES = [
+	"title",
+	"aria-label",
+	"aria-description",
+	"placeholder",
+	"alt",
+];
+
+const DEFAULT_DIRECTION_OVERRIDES: Record<string, "ltr" | "rtl"> = {
+	ar: "rtl",
+	fa: "rtl",
+	he: "rtl",
+	ku: "rtl",
+	ur: "rtl",
+	ps: "rtl",
+	ug: "rtl",
+	ckb: "rtl",
+	arc: "rtl",
+	azb: "rtl",
+	dv: "rtl",
+	sd: "rtl",
+	ug_arab: "rtl",
+	yi: "rtl",
+};
+
+const DATA_DIRECTIVE_SKIP_VALUES = new Set([
+	"false",
+	"off",
+	"skip",
+	"ignore",
+	"no",
+	"none",
+	"stop",
+]);
+
+const DATA_DIRECTIVE_INCLUDE_VALUES = new Set([
+	"",
+	"true",
+	"on",
+	"yes",
+	"include",
+	"auto",
+	"all",
+]);
 
 export default class TranslationObserver {
 	#mutObserver: MutationObserver;
@@ -40,6 +122,9 @@ export default class TranslationObserver {
 			normalizedKey?: string;
 		}
 	>();
+	#attrStates = new Map<Element, Map<string, AttributeState>>();
+	#observedRoots = new Set<Element | ShadowRoot>();
+	#options: ResolvedObserverOptions;
 
 	#getTranslations: GetTransMapFn;
 
@@ -53,8 +138,11 @@ export default class TranslationObserver {
 		locale?: string,
 		getTranslations?: GetTransMapFn,
 		expiryHours?: number,
-		invalidateFn?: InvalidateFn
+		invalidateFn?: InvalidateFn,
+		options?: TranslationObserverOptions
 	) {
+		this.#options = this.#resolveOptions(options);
+
 		/**
 		 * Abort if not a DOM environment
 		 */
@@ -69,6 +157,8 @@ export default class TranslationObserver {
 		if (!rootNode) {
 			throw new Error("Unable to determine a root node to observe.");
 		}
+
+		this.#observedRoots.add(rootNode);
 
 		if (!navigator?.language) {
 			throw new Error("Unable to access navigator language settings.");
@@ -116,7 +206,7 @@ export default class TranslationObserver {
 				: null;
 
 		/**
-		 * Observe text nodes
+		 * Observe DOM mutations that may require translation updates
 		 */
 		this.#mutObserver = new MutationObserver((mutations) => {
 			this.#transBatch.clear();
@@ -130,10 +220,22 @@ export default class TranslationObserver {
 				if (mutation.type === "childList") {
 					for (const added of mutation.addedNodes) {
 						this.#handlePotentialText(added);
+						this.#handlePotentialAttributes(added);
 					}
 
 					for (const removed of mutation.removedNodes) {
 						this.#cleanupNode(removed);
+					}
+					continue;
+				}
+
+				if (mutation.type === "attributes") {
+					const target = mutation.target;
+					if (target instanceof Element) {
+						this.#handleAttributeMutation(
+							target,
+							mutation.attributeName ?? null
+						);
 					}
 				}
 			}
@@ -145,11 +247,14 @@ export default class TranslationObserver {
 			}
 		});
 
-		this.#mutObserver.observe(rootNode, {
-			subtree: true,
-			characterData: true,
-			childList: true,
-		});
+		this.#observeRoot(rootNode);
+		this.#handlePotentialText(rootNode);
+		this.#handlePotentialAttributes(rootNode);
+		const initialBatch = Array.from(this.#transBatch);
+		this.#transBatch.clear();
+		if (initialBatch.length > 0) {
+			void this.#translate(initialBatch);
+		}
 	}
 
 	async changeLocale(langCode = ``, region = ``) {
@@ -167,6 +272,661 @@ export default class TranslationObserver {
 		this.#dbPromise = null;
 		this.#langCode = nextLang;
 		this.#region = nextRegion;
+
+		if (this.#options.setLanguageAttributes) {
+			this.#applyLanguageMetadata();
+		}
+	}
+
+	observeShadowRoot(root: ShadowRoot): void {
+		if (!(root instanceof ShadowRoot)) {
+			return;
+		}
+
+		if (!this.#observedRoots.has(root)) {
+			this.#observedRoots.add(root);
+		}
+
+		this.#observeRoot(root);
+
+		if (this.#options.setLanguageAttributes) {
+			this.#applyLanguageMetadata();
+		}
+
+		this.#handlePotentialText(root);
+		this.#handlePotentialAttributes(root);
+	}
+
+	#observeRoot(root: Element | ShadowRoot): void {
+		if (!this.#observedRoots.has(root)) {
+			this.#observedRoots.add(root);
+		}
+
+		this.#mutObserver.observe(root, {
+			subtree: true,
+			characterData: true,
+			childList: true,
+			attributes: true,
+		});
+	}
+
+	#applyLanguageMetadata(): void {
+		if (typeof document === "undefined") {
+			return;
+		}
+
+		const localeTag = this.#getCurrentLocaleTag();
+		const direction = this.#resolveDirection(this.#langCode);
+
+		const documentElement = document.documentElement;
+		if (documentElement) {
+			documentElement.setAttribute("lang", localeTag);
+			documentElement.setAttribute("dir", direction);
+			documentElement.setAttribute("data-transmut-lang", localeTag);
+			documentElement.setAttribute("data-transmut-dir", direction);
+		}
+
+		for (const root of this.#observedRoots) {
+			const target =
+				root instanceof ShadowRoot
+					? root.host instanceof Element
+						? root.host
+						: null
+					: root;
+
+			if (!target) {
+				continue;
+			}
+
+			target.setAttribute("lang", localeTag);
+			target.setAttribute("data-transmut-lang", localeTag);
+			target.setAttribute("dir", direction);
+			target.setAttribute("data-transmut-dir", direction);
+		}
+	}
+
+	#getCurrentLocaleTag(): string {
+		return this.#composeLocaleTag(this.#langCode, this.#region);
+	}
+
+	#composeLocaleTag(lang: string, region: string): string {
+		const trimmedLang = (lang ?? "").toLowerCase();
+		const trimmedRegion = (region ?? "").toUpperCase();
+		return trimmedRegion ? `${trimmedLang}-${trimmedRegion}` : trimmedLang;
+	}
+
+	#resolveDirection(lang: string): DirectionSetting {
+		if (this.#options.direction !== "auto") {
+			return this.#options.direction;
+		}
+
+		const normalized = (lang ?? "").toLowerCase();
+		const base = normalized.split(/[-_]/)[0] ?? normalized;
+		const override =
+			this.#options.directionOverrides[normalized] ??
+			this.#options.directionOverrides[base];
+
+		if (override) {
+			return override;
+		}
+
+		const defaultOverride =
+			DEFAULT_DIRECTION_OVERRIDES[normalized] ??
+			DEFAULT_DIRECTION_OVERRIDES[base];
+
+		return defaultOverride ?? "ltr";
+	}
+
+	#directionForLocale(locale?: string): "ltr" | "rtl" | undefined {
+		if (!locale) {
+			return undefined;
+		}
+
+		const normalized = locale.toLowerCase();
+		const base = normalized.split(/[-_]/)[0] ?? normalized;
+		const override =
+			this.#options.directionOverrides[normalized] ??
+			this.#options.directionOverrides[base];
+
+		if (override) {
+			return override;
+		}
+
+		return (
+			DEFAULT_DIRECTION_OVERRIDES[normalized] ??
+			DEFAULT_DIRECTION_OVERRIDES[base]
+		);
+	}
+
+	#formatLocaleTag(value: string): string {
+		const normalized = value.trim().replace(/_/g, "-");
+		if (normalized.length === 0) {
+			return normalized;
+		}
+
+		const segments = normalized.split("-");
+		const [lang, ...rest] = segments;
+		const formattedLang = (lang ?? "").toLowerCase();
+		const formattedRest = rest.map((segment, index) =>
+			index === 0 ? segment.toUpperCase() : segment
+		);
+		const remainder = formattedRest.filter(Boolean).join("-");
+		return remainder ? `${formattedLang}-${remainder}` : formattedLang;
+	}
+
+	#readDirectionOverride(element: Element): "ltr" | "rtl" | undefined {
+		const rawDir =
+			element.getAttribute("data-transmut-dir") ??
+			element.getAttribute("dir");
+		if (!rawDir) {
+			return undefined;
+		}
+
+		const normalized = rawDir.trim().toLowerCase();
+		return normalized === "ltr" || normalized === "rtl"
+			? (normalized as "ltr" | "rtl")
+			: undefined;
+	}
+
+	#normalizeLocaleDirective(
+		value: string | null
+	): SectionLocaleDirective | null {
+		if (value === null) {
+			return { skipTranslation: false };
+		}
+
+		const trimmed = value.trim();
+		if (trimmed.length === 0) {
+			return { skipTranslation: false };
+		}
+
+		const lower = trimmed.toLowerCase();
+		if (lower === "inherit" || lower === "auto" || lower === "target") {
+			return { skipTranslation: false };
+		}
+
+		if (
+			lower === "skip" ||
+			lower === "source" ||
+			lower === "original" ||
+			lower === "none"
+		) {
+			return { skipTranslation: true };
+		}
+
+		const localeTag = this.#formatLocaleTag(trimmed);
+		const skipTranslation =
+			localeTag.toLowerCase() !==
+			this.#getCurrentLocaleTag().toLowerCase();
+		return {
+			localeTag,
+			skipTranslation,
+		};
+	}
+
+	#applyLocaleAttributes(
+		element: Element,
+		directive: SectionLocaleDirective
+	): void {
+		if (!this.#options.setLanguageAttributes) {
+			return;
+		}
+
+		if (directive.localeTag) {
+			element.setAttribute("lang", directive.localeTag);
+			element.setAttribute("data-transmut-lang", directive.localeTag);
+		}
+
+		const direction =
+			directive.direction ??
+			this.#directionForLocale(directive.localeTag);
+		if (direction) {
+			element.setAttribute("dir", direction);
+			element.setAttribute("data-transmut-dir", direction);
+		}
+	}
+
+	#applyLocaleAttributesToElement(element: Element): void {
+		const directive = this.#compileLocaleDirective(element);
+		if (!directive) {
+			return;
+		}
+
+		this.#applyLocaleAttributes(element, directive);
+	}
+
+	#compileLocaleDirective(element: Element): SectionLocaleDirective | null {
+		const currentLocale = this.#getCurrentLocaleTag();
+
+		if (element.hasAttribute("data-transmut-locale")) {
+			const directive = this.#normalizeLocaleDirective(
+				element.getAttribute("data-transmut-locale")
+			);
+			if (!directive) {
+				return null;
+			}
+
+			const directionOverride = this.#readDirectionOverride(element);
+			if (directionOverride) {
+				directive.direction = directionOverride;
+			} else if (directive.localeTag) {
+				directive.direction = this.#directionForLocale(
+					directive.localeTag
+				);
+			}
+
+			return directive;
+		}
+
+		if (element.hasAttribute("lang")) {
+			const langAttr = element.getAttribute("lang");
+			if (!langAttr) {
+				return null;
+			}
+
+			const localeTag = this.#formatLocaleTag(langAttr);
+			if (localeTag.length === 0) {
+				return null;
+			}
+
+			const skipTranslation =
+				localeTag.toLowerCase() !== currentLocale.toLowerCase();
+			const directionOverride = this.#readDirectionOverride(element);
+			return {
+				localeTag,
+				direction:
+					directionOverride ?? this.#directionForLocale(localeTag),
+				skipTranslation,
+			};
+		}
+
+		if (element.hasAttribute("data-transmut-dir")) {
+			const directionOverride = this.#readDirectionOverride(element);
+			if (directionOverride) {
+				return {
+					direction: directionOverride,
+					skipTranslation: false,
+				};
+			}
+		}
+
+		return null;
+	}
+
+	#handlePotentialAttributes = (node: Node): void => {
+		if (node.nodeType !== Node.ELEMENT_NODE) {
+			return;
+		}
+
+		const element = node as Element;
+		this.#queueAttributesForElement(element);
+
+		for (const child of Array.from(element.childNodes)) {
+			this.#handlePotentialAttributes(child);
+		}
+	};
+
+	#queueAttributesForElement(element: Element): void {
+		const targetAttributes = this.#resolveAttributeTargets(element);
+
+		if (targetAttributes.length === 0) {
+			this.#attrStates.delete(element);
+			return;
+		}
+
+		const attrMap =
+			this.#attrStates.get(element) ?? new Map<string, AttributeState>();
+		const normalizedTargets = new Set(
+			targetAttributes.map((name) => name.toLowerCase())
+		);
+
+		for (const existing of Array.from(attrMap.keys())) {
+			if (!normalizedTargets.has(existing.toLowerCase())) {
+				attrMap.delete(existing);
+			}
+		}
+
+		for (const attributeName of targetAttributes) {
+			this.#queueAttributeTranslation(element, attributeName, attrMap);
+		}
+
+		if (attrMap.size > 0) {
+			this.#attrStates.set(element, attrMap);
+		} else {
+			this.#attrStates.delete(element);
+		}
+	}
+
+	#resolveAttributeTargets(element: Element): string[] {
+		const directive = this.#findTransmutDirective(element);
+		if (directive === "skip") {
+			return [];
+		}
+
+		const override = this.#getSectionLocaleInfo(element);
+		if (override?.skipTranslation) {
+			return [];
+		}
+
+		const explicitList = this.#parseAttributeList(
+			element.getAttribute("data-transmut-attrs")
+		);
+		const attrNames = new Set<string>();
+
+		for (const attr of explicitList) {
+			attrNames.add(attr);
+		}
+
+		const hasExplicitAttribute = element.hasAttribute(
+			"data-transmut-attrs"
+		);
+		const matchesSelector = this.#matchesAttributeSelector(element);
+
+		if (
+			matchesSelector ||
+			directive === "include" ||
+			(hasExplicitAttribute && explicitList.length === 0)
+		) {
+			for (const defaultName of this.#options.attributeNames) {
+				if (element.hasAttribute(defaultName)) {
+					attrNames.add(defaultName);
+				}
+			}
+		}
+
+		if (this.#options.requireExplicitOptIn && attrNames.size === 0) {
+			return [];
+		}
+
+		return Array.from(attrNames).filter((name) =>
+			element.hasAttribute(name)
+		);
+	}
+
+	#parseAttributeList(value: string | null): string[] {
+		if (!value) {
+			return [];
+		}
+
+		return value
+			.split(",")
+			.map((attr) => attr.trim().toLowerCase())
+			.filter((attr) => attr.length > 0);
+	}
+
+	#matchesAttributeSelector(element: Element): boolean {
+		const selector = this.#options.attributeSelector;
+		if (!selector) {
+			return false;
+		}
+
+		try {
+			return element.matches(selector);
+		} catch (_error) {
+			return false;
+		}
+	}
+
+	#handleAttributeMutation(
+		element: Element,
+		attributeName: string | null
+	): void {
+		if (!attributeName) {
+			return;
+		}
+
+		const normalizedAttribute = attributeName.toLowerCase();
+
+		if (
+			normalizedAttribute === "data-transmut" ||
+			normalizedAttribute === "data-transmut-attrs"
+		) {
+			this.#queueAttributesForElement(element);
+			this.#handlePotentialText(element);
+			this.#handlePotentialAttributes(element);
+			return;
+		}
+
+		if (
+			normalizedAttribute === "data-transmut-locale" ||
+			normalizedAttribute === "data-transmut-dir" ||
+			normalizedAttribute === "lang" ||
+			normalizedAttribute === "dir"
+		) {
+			this.#applyLocaleAttributesToElement(element);
+			this.#queueAttributesForElement(element);
+			for (const child of Array.from(element.childNodes)) {
+				this.#handlePotentialText(child);
+			}
+			return;
+		}
+
+		this.#queueAttributesForElement(element);
+	}
+
+	#queueAttributeTranslation(
+		element: Element,
+		attributeName: string,
+		attrMap: Map<string, AttributeState>
+	): void {
+		const currentValue = element.getAttribute(attributeName);
+		if (currentValue === null || currentValue.length === 0) {
+			attrMap.delete(attributeName);
+			if (attrMap.size === 0) {
+				this.#attrStates.delete(element);
+			}
+			return;
+		}
+
+		const existing = attrMap.get(attributeName);
+		if (existing?.translated && existing.lastValue === currentValue) {
+			return;
+		}
+
+		const { normalized, hasVariables, hasNumbers } =
+			this.#normalizeText(currentValue);
+		const translationKey =
+			hasVariables || hasNumbers ? normalized : currentValue;
+
+		this.#transBatch.add(translationKey);
+		attrMap.set(attributeName, {
+			translated: false,
+			lastValue: currentValue,
+			pendingSource: translationKey,
+			normalizedKey: hasVariables || hasNumbers ? normalized : undefined,
+		});
+	}
+
+	#getSectionLocaleInfo(element: Element): SectionLocaleDirective | null {
+		let current: Element | null = element;
+		while (current) {
+			const directive = this.#compileLocaleDirective(current);
+			if (directive) {
+				this.#applyLocaleAttributes(current, directive);
+				if (directive.skipTranslation) {
+					return directive;
+				}
+			}
+			current = current.parentElement;
+		}
+
+		return null;
+	}
+
+	#shouldProcessTextNode(textNode: Text): boolean {
+		const container = this.#getTextContainer(textNode);
+		if (!container) {
+			return !this.#options.requireExplicitOptIn;
+		}
+
+		if (this.#options.skipEditable && this.#isEditable(container)) {
+			return false;
+		}
+
+		if (this.#isProhibitedContainer(container)) {
+			return false;
+		}
+
+		const directive = this.#findTransmutDirective(container);
+		if (directive === "skip") {
+			return false;
+		}
+
+		const override = this.#getSectionLocaleInfo(container);
+		if (override?.skipTranslation) {
+			return false;
+		}
+
+		if (this.#options.requireExplicitOptIn) {
+			return (
+				this.#matchesTextSelector(container) || directive === "include"
+			);
+		}
+
+		if (this.#matchesTextSelector(container)) {
+			return true;
+		}
+
+		if (directive === "include") {
+			return true;
+		}
+
+		return true;
+	}
+
+	#getTextContainer(textNode: Text): Element | null {
+		const parentElement = textNode.parentElement;
+		if (parentElement) {
+			return parentElement;
+		}
+
+		const parentNode = textNode.parentNode;
+		if (parentNode instanceof ShadowRoot) {
+			return parentNode.host instanceof Element ? parentNode.host : null;
+		}
+
+		return null;
+	}
+
+	#isEditable(element: Element): boolean {
+		if (!(element instanceof HTMLElement)) {
+			return false;
+		}
+
+		if (element.isContentEditable) {
+			return true;
+		}
+
+		switch (element.tagName) {
+			case "INPUT":
+			case "TEXTAREA":
+			case "SELECT":
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	#isProhibitedContainer(element: Element): boolean {
+		const tag = element.tagName;
+		return tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT";
+	}
+
+	#findTransmutDirective(element: Element): "include" | "skip" | null {
+		let current: Element | null = element;
+		while (current) {
+			if (current.hasAttribute("data-transmut")) {
+				const directive = this.#parseTransmutDirective(
+					current.getAttribute("data-transmut")
+				);
+				if (directive !== "inherit") {
+					return directive;
+				}
+			}
+			current = current.parentElement;
+		}
+
+		return null;
+	}
+
+	#parseTransmutDirective(
+		value: string | null
+	): "include" | "skip" | "inherit" {
+		if (value === null) {
+			return "include";
+		}
+
+		const normalized = value.trim().toLowerCase();
+		if (DATA_DIRECTIVE_SKIP_VALUES.has(normalized)) {
+			return "skip";
+		}
+
+		if (normalized === "inherit") {
+			return "inherit";
+		}
+
+		if (DATA_DIRECTIVE_INCLUDE_VALUES.has(normalized)) {
+			return "include";
+		}
+
+		return "include";
+	}
+
+	#matchesTextSelector(element: Element): boolean {
+		const selector = this.#options.textSelector;
+		if (!selector) {
+			return false;
+		}
+
+		try {
+			return Boolean(element.closest(selector));
+		} catch (_error) {
+			return false;
+		}
+	}
+
+	#resolveOptions(
+		options?: TranslationObserverOptions
+	): ResolvedObserverOptions {
+		const attributeNames = Array.from(
+			new Set(
+				(options?.attributeNames ?? DEFAULT_ATTRIBUTE_NAMES)
+					.map((name) => name.trim().toLowerCase())
+					.filter((name) => name.length > 0)
+			)
+		);
+
+		const mergedOverrides = {
+			...DEFAULT_DIRECTION_OVERRIDES,
+			...(options?.directionOverrides ?? {}),
+		};
+
+		const directionOverrides: Record<string, "ltr" | "rtl"> = {};
+		for (const [key, value] of Object.entries(mergedOverrides)) {
+			const normalizedKey = key.trim().toLowerCase();
+			if (normalizedKey.length === 0) {
+				continue;
+			}
+			if (value === "ltr" || value === "rtl") {
+				directionOverrides[normalizedKey] = value;
+			}
+		}
+
+		const requireExplicitOptIn = options?.requireExplicitOptIn ?? false;
+
+		return {
+			requireExplicitOptIn,
+			textSelector:
+				options?.textSelector ??
+				(requireExplicitOptIn ? "[data-transmut]" : null),
+			attributeSelector:
+				options?.attributeSelector ?? "[data-transmut-attrs]",
+			attributeNames,
+			skipEditable: options?.skipEditable ?? true,
+			setLanguageAttributes: options?.setLanguageAttributes ?? true,
+			direction: options?.direction ?? "auto",
+			directionOverrides,
+		};
 	}
 
 	/**
@@ -181,6 +941,7 @@ export default class TranslationObserver {
 		let hasNumbers = false;
 
 		// Replace template variables like ${variable} with {}
+		this.#variablePattern.lastIndex = 0;
 		if (this.#variablePattern.test(text)) {
 			hasVariables = true;
 			normalized = normalized.replace(
@@ -190,6 +951,7 @@ export default class TranslationObserver {
 		}
 
 		// Replace numbers with {}
+		this.#numberPattern.lastIndex = 0;
 		if (this.#numberPattern.test(normalized)) {
 			hasNumbers = true;
 			normalized = normalized.replace(
@@ -208,6 +970,8 @@ export default class TranslationObserver {
 		translatedBase: string,
 		originalText: string
 	): string => {
+		this.#numberPattern.lastIndex = 0;
+		this.#variablePattern.lastIndex = 0;
 		const originalNumbers = originalText.match(this.#numberPattern) || [];
 		const originalVariables =
 			originalText.match(this.#variablePattern) || [];
@@ -226,6 +990,15 @@ export default class TranslationObserver {
 		if (node.nodeType === Node.TEXT_NODE) {
 			const textNode = node as Text;
 			const content = textNode.textContent ?? ``;
+			if (!this.#shouldProcessTextNode(textNode)) {
+				this.#nodeStates.delete(textNode);
+				return;
+			}
+
+			if (content.trim().length === 0) {
+				this.#nodeStates.delete(textNode);
+				return;
+			}
 			const existing = this.#nodeStates.get(textNode);
 
 			if (existing?.translated && existing.lastText === content) {
@@ -371,12 +1144,60 @@ export default class TranslationObserver {
 				this.#nodeStates.set(node, state);
 			}
 		}
+
+		for (const [element, attrMap] of this.#attrStates.entries()) {
+			for (const [attributeName, attrState] of attrMap.entries()) {
+				if (
+					!attrState.pendingSource ||
+					!requested.has(attrState.pendingSource)
+				) {
+					continue;
+				}
+
+				const currentValue = element.getAttribute(attributeName) ?? ``;
+				if (currentValue !== attrState.lastValue) {
+					attrState.translated = false;
+					attrState.lastValue = currentValue;
+					attrState.pendingSource = undefined;
+					attrState.normalizedKey = undefined;
+					attrMap.set(attributeName, attrState);
+					continue;
+				}
+
+				const translatedBase = resolved[attrState.pendingSource];
+				if (translatedBase && translatedBase !== currentValue) {
+					const finalValue = attrState.normalizedKey
+						? this.#reconstructText(
+								translatedBase,
+								attrState.lastValue
+						  )
+						: translatedBase;
+
+					element.setAttribute(attributeName, finalValue);
+					attrState.translated = true;
+					attrState.lastValue = finalValue;
+					attrState.pendingSource = undefined;
+					attrState.normalizedKey = undefined;
+					attrMap.set(attributeName, attrState);
+				} else {
+					attrState.translated = true;
+					attrState.lastValue = currentValue;
+					attrState.pendingSource = undefined;
+					attrState.normalizedKey = undefined;
+					attrMap.set(attributeName, attrState);
+				}
+			}
+		}
 	};
 
 	#cleanupNode = (node: Node): void => {
 		if (node.nodeType === Node.TEXT_NODE) {
 			this.#nodeStates.delete(node as Text);
 			return;
+		}
+
+		if (node.nodeType === Node.ELEMENT_NODE) {
+			this.#attrStates.delete(node as Element);
 		}
 
 		for (const child of node.childNodes) {
