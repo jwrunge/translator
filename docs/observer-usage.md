@@ -15,16 +15,17 @@ This example shows how to opt-in elements, translate attributes, and work with s
 
 			<!-- Text nodes & attributes marked for translation -->
 			<p data-transmut="include">
-				<span data-transmut="include"
-					>You have 12 unread messages.</span
-				>
+				<span data-transmut="include" data-transmut-count="12">
+					You have ${count} unread messages.
+				</span>
 				<button
 					data-transmut="include"
 					data-transmut-attrs="title, aria-label"
+					data-transmut-label="Open inbox"
 					title="View inbox"
 					aria-label="View inbox"
 				>
-					Open inbox
+					${label}
 				</button>
 			</p>
 
@@ -87,8 +88,12 @@ This example shows how to opt-in elements, translate attributes, and work with s
 			const host = document.getElementById("shadow-example");
 			const root = host.attachShadow({ mode: "open" });
 			root.innerHTML = `
-				<p data-transmut="include" title="New alerts">
-					You have 3 new alerts.
+				<p
+					data-transmut="include"
+					data-transmut-alerts="3"
+					title="New alerts"
+				>
+					You have ${alerts} new alerts.
 				</p>
 			`;
 		</script>
@@ -100,5 +105,6 @@ This example shows how to opt-in elements, translate attributes, and work with s
 
 -   `data-transmut="include"` opts a subtree into translation when `requireExplicitOptIn` is `true`.
 -   `data-transmut-attrs` lists attribute names that should be translated on a specific element.
+-   `data-transmut-{name}` binds placeholder values (e.g. `${name}`) so the observer can reinsert dynamic content after translation.
 -   Language metadata (`lang`, `dir`, `data-transmut-lang`, `data-transmut-dir`) is applied automatically to observed roots and locale overrides.
 -   Shadow DOM content must be registered via `observeShadowRoot` so it receives translations and metadata updates.

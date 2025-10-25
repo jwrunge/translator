@@ -35,6 +35,7 @@ interface AttributeState {
 	lastValue: string;
 	pendingSource?: string;
 	normalizedKey?: string;
+	fragments?: DynamicFragment[];
 }
 
 interface SectionLocaleDirective {
@@ -42,6 +43,40 @@ interface SectionLocaleDirective {
 	direction?: "ltr" | "rtl";
 	skipTranslation: boolean;
 }
+
+interface NodeState {
+	translated: boolean;
+	lastText: string;
+	pendingSource?: string;
+	normalizedKey?: string;
+	fragments?: DynamicFragment[];
+}
+
+type DynamicFragment =
+	| {
+			type: "variable";
+			raw: string;
+			name?: string;
+	  }
+	| {
+			type: "number";
+			raw: string;
+	  };
+
+type DynamicFragmentMatch =
+	| {
+			type: "variable";
+			raw: string;
+			name?: string;
+			start: number;
+			end: number;
+	  }
+	| {
+			type: "number";
+			raw: string;
+			start: number;
+			end: number;
+	  };
 
 interface CachedEntry {
 	value: string;
@@ -113,15 +148,7 @@ export default class TranslationObserver {
 	#initPromise: Promise<void>;
 
 	#transBatch = new Set<string>();
-	#nodeStates = new Map<
-		Text,
-		{
-			translated: boolean;
-			lastText: string;
-			pendingSource?: string;
-			normalizedKey?: string;
-		}
-	>();
+	#nodeStates = new Map<Text, NodeState>();
 	#attrStates = new Map<Element, Map<string, AttributeState>>();
 	#observedRoots = new Set<Element | ShadowRoot>();
 	#options: ResolvedObserverOptions;
@@ -130,7 +157,7 @@ export default class TranslationObserver {
 
 	// Regex patterns for normalizing dynamic content
 	#numberPattern = /\b\d+(?:\.\d+)?\b/g;
-	#variablePattern = /\${[^}]*}/g;
+	#variableNamePattern = /\${\s*([^}]+?)\s*}/g;
 	#placeholderToken = "{}";
 
 	constructor(
@@ -723,7 +750,7 @@ export default class TranslationObserver {
 			return;
 		}
 
-		const { normalized, hasVariables, hasNumbers } =
+		const { normalized, hasVariables, hasNumbers, fragments } =
 			this.#normalizeText(currentValue);
 		const translationKey =
 			hasVariables || hasNumbers ? normalized : currentValue;
@@ -734,6 +761,7 @@ export default class TranslationObserver {
 			lastValue: currentValue,
 			pendingSource: translationKey,
 			normalizedKey: hasVariables || hasNumbers ? normalized : undefined,
+			fragments: fragments.length > 0 ? fragments : undefined,
 		});
 	}
 
@@ -935,56 +963,204 @@ export default class TranslationObserver {
 	 */
 	#normalizeText = (
 		text: string
-	): { normalized: string; hasVariables: boolean; hasNumbers: boolean } => {
-		let normalized = text;
-		let hasVariables = false;
-		let hasNumbers = false;
-
-		// Replace template variables like ${variable} with {}
-		this.#variablePattern.lastIndex = 0;
-		if (this.#variablePattern.test(text)) {
-			hasVariables = true;
-			normalized = normalized.replace(
-				this.#variablePattern,
-				this.#placeholderToken
-			);
+	): {
+		normalized: string;
+		hasVariables: boolean;
+		hasNumbers: boolean;
+		fragments: DynamicFragment[];
+	} => {
+		const matches = this.#collectDynamicMatches(text);
+		if (matches.length === 0) {
+			return {
+				normalized: text,
+				hasVariables: false,
+				hasNumbers: false,
+				fragments: [],
+			};
 		}
 
-		// Replace numbers with {}
-		this.#numberPattern.lastIndex = 0;
-		if (this.#numberPattern.test(normalized)) {
-			hasNumbers = true;
-			normalized = normalized.replace(
-				this.#numberPattern,
-				this.#placeholderToken
-			);
-		}
+		const fragments: DynamicFragment[] = matches.map((match) => {
+			if (match.type === "variable") {
+				return {
+					type: "variable" as const,
+					raw: match.raw,
+					name: match.name,
+				};
+			}
+			return {
+				type: "number" as const,
+				raw: match.raw,
+			};
+		});
 
-		return { normalized, hasVariables, hasNumbers };
+		const normalizedParts: string[] = [];
+		let lastIndex = 0;
+		for (const match of matches) {
+			normalizedParts.push(text.slice(lastIndex, match.start));
+			normalizedParts.push(this.#placeholderToken);
+			lastIndex = match.end;
+		}
+		normalizedParts.push(text.slice(lastIndex));
+
+		const hasVariables = fragments.some(
+			(fragment) => fragment.type === "variable"
+		);
+		const hasNumbers = fragments.some(
+			(fragment) => fragment.type === "number"
+		);
+
+		return {
+			normalized: normalizedParts.join(""),
+			hasVariables,
+			hasNumbers,
+			fragments,
+		};
 	};
+
+	#collectDynamicMatches(text: string): DynamicFragmentMatch[] {
+		const matches: DynamicFragmentMatch[] = [];
+
+		this.#variableNamePattern.lastIndex = 0;
+		let variableMatch: RegExpExecArray | null;
+		while (
+			(variableMatch = this.#variableNamePattern.exec(text)) !== null
+		) {
+			const raw = variableMatch[0];
+			const name = this.#sanitizeVariableName(variableMatch[1] ?? "");
+			matches.push({
+				type: "variable",
+				raw,
+				name,
+				start: variableMatch.index,
+				end: variableMatch.index + raw.length,
+			});
+		}
+
+		this.#numberPattern.lastIndex = 0;
+		let numberMatch: RegExpExecArray | null;
+		while ((numberMatch = this.#numberPattern.exec(text)) !== null) {
+			const raw = numberMatch[0];
+			matches.push({
+				type: "number",
+				raw,
+				start: numberMatch.index,
+				end: numberMatch.index + raw.length,
+			});
+		}
+
+		matches.sort((a, b) => a.start - b.start);
+		return matches;
+	}
+
+	#sanitizeVariableName(name: string | undefined): string | undefined {
+		if (!name) {
+			return undefined;
+		}
+
+		const trimmed = name.trim();
+		if (trimmed.length === 0) {
+			return undefined;
+		}
+
+		const normalized = trimmed
+			.replace(/\s+/g, "-")
+			.replace(/[^a-zA-Z0-9_-]+/g, "-")
+			.replace(/-{2,}/g, "-")
+			.replace(/^-+|-+$/g, "");
+
+		return normalized.length > 0 ? normalized.toLowerCase() : undefined;
+	}
 
 	/**
 	 * Reconstructs translated text by replacing placeholders with original dynamic values
 	 */
 	#reconstructText = (
 		translatedBase: string,
-		originalText: string
+		fragments: DynamicFragment[] | undefined,
+		container: Element | null
 	): string => {
-		this.#numberPattern.lastIndex = 0;
-		this.#variablePattern.lastIndex = 0;
-		const originalNumbers = originalText.match(this.#numberPattern) || [];
-		const originalVariables =
-			originalText.match(this.#variablePattern) || [];
+		if (!fragments || fragments.length === 0) {
+			return translatedBase;
+		}
 
 		let result = translatedBase;
-
-		// Replace placeholders with original values in order
-		[...originalVariables, ...originalNumbers].forEach((value) => {
-			result = result.replace(this.#placeholderToken, value);
-		});
+		for (const fragment of fragments) {
+			let replacement = fragment.raw;
+			if (fragment.type === "variable") {
+				const resolved = this.#resolveVariableValue(
+					container,
+					fragment
+				);
+				replacement = resolved ?? fragment.raw;
+			}
+			result = result.replace(this.#placeholderToken, replacement);
+		}
 
 		return result;
 	};
+
+	#resolveVariableValue(
+		container: Element | null,
+		fragment: Extract<DynamicFragment, { type: "variable" }>
+	): string | null {
+		if (!container) {
+			return null;
+		}
+
+		const name = fragment.name;
+		if (!name) {
+			return null;
+		}
+
+		const attributeName = this.#buildVariableAttributeName(name);
+		let current: Element | null = container;
+		const visited = new Set<Element>();
+
+		while (current && !visited.has(current)) {
+			visited.add(current);
+			const value = this.#getAttributeCaseInsensitive(
+				current,
+				attributeName
+			);
+			if (value !== null) {
+				return value;
+			}
+
+			const parentElement: Element | null = current.parentElement;
+			if (parentElement) {
+				current = parentElement;
+				continue;
+			}
+
+			const parentNode: Node | null = current.parentNode;
+			if (parentNode instanceof ShadowRoot) {
+				current =
+					parentNode.host instanceof Element ? parentNode.host : null;
+			} else {
+				current = null;
+			}
+		}
+
+		return null;
+	}
+
+	#buildVariableAttributeName(name: string): string {
+		return `data-transmut-${name}`;
+	}
+
+	#getAttributeCaseInsensitive(
+		element: Element,
+		name: string
+	): string | null {
+		const target = name.toLowerCase();
+		for (const attr of Array.from(element.attributes)) {
+			if (attr.name.toLowerCase() === target) {
+				return attr.value;
+			}
+		}
+
+		return null;
+	}
 
 	#handlePotentialText = (node: Node): void => {
 		if (node.nodeType === Node.TEXT_NODE) {
@@ -1010,7 +1186,7 @@ export default class TranslationObserver {
 			}
 
 			// Normalize the text to handle dynamic content
-			const { normalized, hasVariables, hasNumbers } =
+			const { normalized, hasVariables, hasNumbers, fragments } =
 				this.#normalizeText(content);
 
 			// Use normalized text as the translation key if it has dynamic content
@@ -1024,6 +1200,7 @@ export default class TranslationObserver {
 				pendingSource: translationKey,
 				normalizedKey:
 					hasVariables || hasNumbers ? normalized : undefined,
+				fragments: fragments.length > 0 ? fragments : undefined,
 			});
 			return;
 		}
@@ -1119,6 +1296,7 @@ export default class TranslationObserver {
 				state.lastText = currentText;
 				state.pendingSource = undefined;
 				state.normalizedKey = undefined;
+				state.fragments = undefined;
 				this.#nodeStates.set(node, state);
 				continue;
 			}
@@ -1126,8 +1304,13 @@ export default class TranslationObserver {
 			const translatedBase = resolved[state.pendingSource];
 			if (translatedBase && translatedBase !== currentText) {
 				// If this was normalized text with dynamic content, reconstruct it
+				const container = this.#getTextContainer(node);
 				const finalTranslation = state.normalizedKey
-					? this.#reconstructText(translatedBase, state.lastText)
+					? this.#reconstructText(
+							translatedBase,
+							state.fragments,
+							container
+					  )
 					: translatedBase;
 
 				node.textContent = finalTranslation;
@@ -1135,12 +1318,14 @@ export default class TranslationObserver {
 				state.lastText = finalTranslation;
 				state.pendingSource = undefined;
 				state.normalizedKey = undefined;
+				state.fragments = undefined;
 				this.#nodeStates.set(node, state);
 			} else {
 				state.translated = true;
 				state.lastText = currentText;
 				state.pendingSource = undefined;
 				state.normalizedKey = undefined;
+				state.fragments = undefined;
 				this.#nodeStates.set(node, state);
 			}
 		}
@@ -1160,6 +1345,7 @@ export default class TranslationObserver {
 					attrState.lastValue = currentValue;
 					attrState.pendingSource = undefined;
 					attrState.normalizedKey = undefined;
+					attrState.fragments = undefined;
 					attrMap.set(attributeName, attrState);
 					continue;
 				}
@@ -1169,7 +1355,8 @@ export default class TranslationObserver {
 					const finalValue = attrState.normalizedKey
 						? this.#reconstructText(
 								translatedBase,
-								attrState.lastValue
+								attrState.fragments,
+								element
 						  )
 						: translatedBase;
 
@@ -1178,12 +1365,14 @@ export default class TranslationObserver {
 					attrState.lastValue = finalValue;
 					attrState.pendingSource = undefined;
 					attrState.normalizedKey = undefined;
+					attrState.fragments = undefined;
 					attrMap.set(attributeName, attrState);
 				} else {
 					attrState.translated = true;
 					attrState.lastValue = currentValue;
 					attrState.pendingSource = undefined;
 					attrState.normalizedKey = undefined;
+					attrState.fragments = undefined;
 					attrMap.set(attributeName, attrState);
 				}
 			}
