@@ -41,6 +41,48 @@ await observer.changeLocale("es", "MX");
 
 Place `data-transmut="include"` (or other directives) on elements that provide opt-in. The observer will automatically translate matching text nodes and opted-in attributes.
 
+## SQLite Backend (Optional)
+
+The module in `src/backend/sqlite-translations.ts` persists translations in a local SQLite database using `sql.js`. It exposes helpers that can run in a Node environment (or be bundled to a standalone binary with tools such as `npx pkg`, `bun build --compile`, or `deno compile --unstable` when the accompanying `sql-wasm.wasm` file is copied next to the executable).
+
+```ts
+import {
+	createSqliteTranslationProvider,
+	upsertTranslations,
+} from "./src/backend/sqlite-translations";
+
+// Persist or update translation pairs
+await upsertTranslations({
+	databasePath: "/var/app/data/translations.sqlite",
+	locale: { langCode: "es", region: "MX" },
+	translations: {
+		"Hello, world!": "¡Hola, mundo!",
+		Checkout: "Pagar",
+	},
+});
+
+// Hook the database up to TranslationObserver on the server
+const sqliteProvider = createSqliteTranslationProvider(
+	"/var/app/data/translations.sqlite"
+);
+
+// Example inside an HTTP handler
+app.get("/api/translations", async (req, res) => {
+	const { lang, region, keys } = req.query;
+	const map = await sqliteProvider(
+		{ langCode: String(lang), region: String(region ?? "") },
+		Array.isArray(keys) ? keys : String(keys).split(",")
+	);
+	res.json(map);
+});
+```
+
+Additional utilities are available:
+
+-   `loadTranslations` — fetch a subset of keys directly from disk.
+-   `listTranslations` — inspect all entries for a locale (useful for admin tools or exporting).
+-   `SqliteTranslationProviderOptions` — control locale fallback behaviour.
+
 ## Constructor Signature
 
 ```ts
