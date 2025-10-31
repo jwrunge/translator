@@ -3,7 +3,97 @@
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>Test translator</title>
+		<title>Transmut Translator Demo</title>
+		<style>
+			body {
+				font-family: system-ui, sans-serif;
+				margin: 0;
+				padding: 2rem;
+				background: #f5f5f5;
+			}
+
+			main {
+				background: #fff;
+				border-radius: 12px;
+				padding: 2rem;
+				box-shadow: 0 10px 30px rgba(15, 23, 42, 0.1);
+				max-width: 640px;
+				margin: 0 auto;
+			}
+
+			label,
+			select,
+			button {
+				font-size: 1rem;
+			}
+
+			select {
+				margin-top: 0.5rem;
+				padding: 0.5rem 0.75rem;
+			}
+
+			button {
+				margin-top: 1rem;
+				padding: 0.75rem 1.5rem;
+				background: #2563eb;
+				border: none;
+				color: white;
+				border-radius: 9999px;
+				cursor: pointer;
+			}
+
+			button:hover {
+				background: #1e40af;
+			}
+
+			p {
+				line-height: 1.5;
+			}
+		</style>
 	</head>
-	<body></body>
+	<body>
+		<main data-transmut="include">
+			<h1 data-transmut="include">Transmut demo</h1>
+			<p data-transmut="include">
+				This page demonstrates the TranslationObserver running against a
+				tiny HTTP backend.
+			</p>
+			<section>
+				<label
+					for="language-picker"
+					data-transmut="include"
+					data-transmut-attrs="aria-label"
+					aria-label="Language picker"
+				>
+					Choose a language
+				</label>
+				<select id="language-picker">
+					<option value="en" data-transmut="include" selected>
+						English
+					</option>
+					<option value="es" data-transmut="include">Spanish</option>
+					<option value="fr" data-transmut="include">French</option>
+				</select>
+			</section>
+			<section data-transmut="include">
+				<h2 data-transmut="include">Cart status</h2>
+				<p
+					id="cart-message"
+					data-transmut="include"
+					data-transmut-variant="empty"
+				>
+					Your cart is empty.
+				</p>
+				<button
+					data-demo-action="populate"
+					data-transmut="include"
+					data-transmut-attrs="title"
+					title="Add a featured item"
+				>
+					Add featured item
+				</button>
+			</section>
+		</main>
+		<script type="module" src="./dist/frontend.js"></script>
+	</body>
 </html>

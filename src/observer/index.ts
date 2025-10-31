@@ -215,6 +215,18 @@ export default class TranslationObserver {
 		});
 	}
 
+	#setAttributeIfChanged(
+		element: Element,
+		name: string,
+		value: string
+	): void {
+		if (element.getAttribute(name) === value) {
+			return;
+		}
+
+		element.setAttribute(name, value);
+	}
+
 	#applyLanguageMetadata(): void {
 		if (typeof document === "undefined") {
 			return;
@@ -225,10 +237,18 @@ export default class TranslationObserver {
 
 		const documentElement = document.documentElement;
 		if (documentElement) {
-			documentElement.setAttribute("lang", localeTag);
-			documentElement.setAttribute("dir", direction);
-			documentElement.setAttribute("data-transmut-lang", localeTag);
-			documentElement.setAttribute("data-transmut-dir", direction);
+			this.#setAttributeIfChanged(documentElement, "lang", localeTag);
+			this.#setAttributeIfChanged(documentElement, "dir", direction);
+			this.#setAttributeIfChanged(
+				documentElement,
+				"data-transmut-lang",
+				localeTag
+			);
+			this.#setAttributeIfChanged(
+				documentElement,
+				"data-transmut-dir",
+				direction
+			);
 		}
 
 		for (const root of this.#observedRoots) {
@@ -243,10 +263,14 @@ export default class TranslationObserver {
 				continue;
 			}
 
-			target.setAttribute("lang", localeTag);
-			target.setAttribute("data-transmut-lang", localeTag);
-			target.setAttribute("dir", direction);
-			target.setAttribute("data-transmut-dir", direction);
+			this.#setAttributeIfChanged(target, "lang", localeTag);
+			this.#setAttributeIfChanged(
+				target,
+				"data-transmut-lang",
+				localeTag
+			);
+			this.#setAttributeIfChanged(target, "dir", direction);
+			this.#setAttributeIfChanged(target, "data-transmut-dir", direction);
 		}
 	}
 
@@ -378,16 +402,24 @@ export default class TranslationObserver {
 		}
 
 		if (directive.localeTag) {
-			element.setAttribute("lang", directive.localeTag);
-			element.setAttribute("data-transmut-lang", directive.localeTag);
+			this.#setAttributeIfChanged(element, "lang", directive.localeTag);
+			this.#setAttributeIfChanged(
+				element,
+				"data-transmut-lang",
+				directive.localeTag
+			);
 		}
 
 		const direction =
 			directive.direction ??
 			this.#directionForLocale(directive.localeTag);
 		if (direction) {
-			element.setAttribute("dir", direction);
-			element.setAttribute("data-transmut-dir", direction);
+			this.#setAttributeIfChanged(element, "dir", direction);
+			this.#setAttributeIfChanged(
+				element,
+				"data-transmut-dir",
+				direction
+			);
 		}
 	}
 
