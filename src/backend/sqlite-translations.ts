@@ -2,16 +2,17 @@ import { promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import initSqlJs from "sql.js";
-import type SqlJs from "sql.js";
+import type { Database, SqlJsStatic } from "sql.js";
 
 import type { GetTransMapFn } from "../observer/types";
 
 const require = createRequire(import.meta.url);
-const SQL_WASM_PATH = require.resolve("sql.js/dist/sql-wasm.wasm");
+const SQL_WASM_PATH =
+	process.env.SQLJS_WASM_PATH ?? require.resolve("sql.js/dist/sql-wasm.wasm");
 
-let sqlJsInstancePromise: Promise<SqlJs.SqlJsStatic> | null = null;
+let sqlJsInstancePromise: Promise<SqlJsStatic> | null = null;
 
-async function loadSqlJs(): Promise<SqlJs.SqlJsStatic> {
+async function loadSqlJs(): Promise<SqlJsStatic> {
 	if (!sqlJsInstancePromise) {
 		sqlJsInstancePromise = initSqlJs({
 			locateFile: (file: string) =>
@@ -39,10 +40,7 @@ async function ensureDirectoryForFile(path: string): Promise<void> {
 	await fs.mkdir(directory, { recursive: true });
 }
 
-async function writeDatabaseFile(
-	path: string,
-	db: SqlJs.Database
-): Promise<void> {
+async function writeDatabaseFile(path: string, db: Database): Promise<void> {
 	await ensureDirectoryForFile(path);
 	const binary = db.export();
 	await fs.writeFile(path, binary);
@@ -53,7 +51,7 @@ type DatabaseMode = "readonly" | "readwrite";
 async function withDatabase<T>(
 	databasePath: string,
 	mode: DatabaseMode,
-	handler: (db: SqlJs.Database) => T | Promise<T>
+	handler: (db: Database) => T | Promise<T>
 ): Promise<T> {
 	const SQL = await loadSqlJs();
 	const fileBytes = await readDatabaseFile(databasePath);
@@ -76,7 +74,7 @@ async function withDatabase<T>(
 	}
 }
 
-function ensureSchema(db: SqlJs.Database): void {
+function ensureSchema(db: Database): void {
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS translations (
 			lang TEXT NOT NULL,
@@ -95,7 +93,7 @@ function ensureSchema(db: SqlJs.Database): void {
 	`);
 }
 
-function hasTranslationTable(db: SqlJs.Database): boolean {
+function hasTranslationTable(db: Database): boolean {
 	const stmt = db.prepare(
 		"SELECT name FROM sqlite_master WHERE type='table' AND name='translations' LIMIT 1;"
 	);
@@ -322,7 +320,7 @@ export async function upsertTranslations({
 }
 
 function collectTranslations(
-	db: SqlJs.Database,
+	db: Database,
 	lang: string,
 	region: string,
 	keys: string[]
