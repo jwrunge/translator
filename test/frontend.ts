@@ -17,7 +17,7 @@ const getTranslations = async (
 	keys: string[]
 ): Promise<Record<string, string>> => {
 	if (locale.langCode === "en") {
-		console.debug(
+		console.log(
 			`[translator-demo] skip fetch for source locale (${formatLocaleTag(
 				locale
 			)}), ${keys.length} key(s)`
@@ -26,13 +26,13 @@ const getTranslations = async (
 	}
 
 	const requestId = ++requestCounter;
-	console.debug(
+	console.log(
 		`[translator-demo] request #${requestId} for ${formatLocaleTag(
 			locale
 		)} (${keys.length} key(s))`
 	);
 	if (keys.length > 0) {
-		console.debug(`[translator-demo] keys #${requestId}`, keys);
+		console.log(`[translator-demo] keys #${requestId}`, keys);
 	}
 
 	try {
@@ -56,7 +56,7 @@ const getTranslations = async (
 		}
 
 		const payload = (await response.json()) as Record<string, string>;
-		console.debug(
+		console.log(
 			`[translator-demo] response #${requestId} (${
 				Object.keys(payload).length
 			} key(s))`
@@ -84,7 +84,7 @@ const languagePicker =
 
 const updateLocale = async (localeTag: string) => {
 	const [langCode, region = ""] = localeTag.split("-");
-	console.debug(`[translator-demo] changeLocale(${localeTag})`);
+	console.log(`[translator-demo] changeLocale(${localeTag})`);
 	await observer.changeLocale(langCode, region);
 };
 

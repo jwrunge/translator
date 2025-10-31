@@ -39,6 +39,7 @@ export default class TranslationObserver {
 	#cache: TranslationCache;
 
 	#getTranslations: GetTransMapFn;
+	#debugCycle = 0;
 
 	constructor(
 		defaultLangCode = "en",
@@ -112,6 +113,42 @@ export default class TranslationObserver {
 				: null;
 
 		this.#mutObserver = new MutationObserver((mutations) => {
+			if (this.#debugEnabled() && mutations.length > 0) {
+				this.#debugCycle += 1;
+				let attributeMutations = 0;
+				let characterMutations = 0;
+				let childMutations = 0;
+				const attributeNames = new Set<string>();
+
+				for (const mutation of mutations) {
+					if (mutation.type === "attributes") {
+						attributeMutations += 1;
+						if (mutation.attributeName) {
+							attributeNames.add(mutation.attributeName);
+						}
+						continue;
+					}
+
+					if (mutation.type === "characterData") {
+						characterMutations += 1;
+						continue;
+					}
+
+					if (mutation.type === "childList") {
+						childMutations += 1;
+					}
+				}
+
+				this.#debugLog(
+					`mutation cycle #${
+						this.#debugCycle
+					}: attrs=${attributeMutations} text=${characterMutations} children=${childMutations}`,
+					attributeNames.size > 0
+						? { attributes: Array.from(attributeNames).sort() }
+						: undefined
+				);
+			}
+
 			this.#transBatch.clear();
 
 			for (const mutation of mutations) {
@@ -215,6 +252,47 @@ export default class TranslationObserver {
 		});
 	}
 
+	#debugEnabled(): boolean {
+		if (typeof window === "undefined") {
+			return false;
+		}
+
+		const flag = (
+			window as typeof window & {
+				__TRANSMUT_DEBUG__?: boolean;
+			}
+		).__TRANSMUT_DEBUG__;
+		if (typeof flag === "boolean") {
+			return flag;
+		}
+
+		return true;
+	}
+
+	#debugLog(...args: unknown[]): void {
+		if (!this.#debugEnabled()) {
+			return;
+		}
+
+		console.log("[transmut-debug]", ...args);
+	}
+
+	#describeElement(element: Element): string {
+		const tag = element.tagName
+			? element.tagName.toLowerCase()
+			: element.constructor?.name ?? "element";
+		const id = element.getAttribute("id");
+		const classes = element.getAttribute("class");
+		const parts: string[] = [`<${tag}>`];
+		if (id) {
+			parts.push(`#${id}`);
+		}
+		if (classes) {
+			parts.push(`.${classes.split(/\s+/).filter(Boolean).join(".")}`);
+		}
+		return parts.join("");
+	}
+
 	#setAttributeIfChanged(
 		element: Element,
 		name: string,
@@ -225,6 +303,9 @@ export default class TranslationObserver {
 		}
 
 		element.setAttribute(name, value);
+		this.#debugLog(
+			`set ${name}="${value}" on ${this.#describeElement(element)}`
+		);
 	}
 
 	#applyLanguageMetadata(): void {
@@ -613,6 +694,13 @@ export default class TranslationObserver {
 		}
 
 		const normalizedAttribute = attributeName.toLowerCase();
+		if (this.#debugEnabled()) {
+			this.#debugLog(
+				`attribute mutation: ${normalizedAttribute} on ${this.#describeElement(
+					element
+				)}`
+			);
+		}
 
 		if (
 			normalizedAttribute === "data-transmut" ||
@@ -975,6 +1063,17 @@ export default class TranslationObserver {
 			return;
 		}
 
+		if (this.#debugEnabled()) {
+			const preview = batch.slice(0, 10);
+			this.#debugLog(
+				`translate batch size=${batch.length}`,
+				preview,
+				batch.length > preview.length
+					? { truncated: batch.length - preview.length }
+					: undefined
+			);
+		}
+
 		await this.#initPromise;
 
 		const cachedEntries = await this.#cache.getCachedTranslations(batch);
@@ -1011,6 +1110,21 @@ export default class TranslationObserver {
 		let fetched: TranslationMap = {};
 
 		if (keysNeedingFetch.length > 0) {
+			if (this.#debugEnabled()) {
+				const preview = keysNeedingFetch.slice(0, 10);
+				this.#debugLog(
+					`fetching ${
+						keysNeedingFetch.length
+					} key(s) for locale ${this.#getCurrentLocaleTag()}`,
+					preview,
+					keysNeedingFetch.length > preview.length
+						? {
+								truncated:
+									keysNeedingFetch.length - preview.length,
+						  }
+						: undefined
+				);
+			}
 			try {
 				const fetchedRaw = await this.#getTranslations(
 					{ langCode: this.#langCode, region: this.#region },
