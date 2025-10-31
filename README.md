@@ -13,6 +13,37 @@ npm install transmut
 
 Vitest is configured for local testing (`npm test`).
 
+## Using in a TypeScript Project
+
+You can import the sources directly without a publish step. Add a path mapping so the compiler resolves the `.ts` files shipped with this package:
+
+```jsonc
+// tsconfig.json
+{
+	"compilerOptions": {
+		"paths": {
+			"transmut": ["./node_modules/transmut/src/index.ts"],
+			"transmut/*": ["./node_modules/transmut/src/*"]
+		}
+	}
+}
+```
+
+Then import the observer or the SQLite helpers straight from your code:
+
+```ts
+import { TranslationObserver, upsertTranslations } from "transmut";
+
+const observer = new TranslationObserver(/* ... */);
+await upsertTranslations({
+	databasePath: "./translations.sqlite",
+	locale: "es-MX",
+	translations: { Cart: "Carrito" },
+});
+```
+
+Bundlers such as Vite/Esbuild can compile the `.ts` sources during your build. If you run Node directly, build the project first (`tsc -p .`) before executing the output.
+
 ## Quick Start
 
 ```ts
@@ -82,6 +113,29 @@ Additional utilities are available:
 -   `loadTranslations` — fetch a subset of keys directly from disk.
 -   `listTranslations` — inspect all entries for a locale (useful for admin tools or exporting).
 -   `SqliteTranslationProviderOptions` — control locale fallback behaviour.
+
+### CLI / Binary Workflow
+
+The `src/backend/cli.ts` entry provides a small command-line tool for managing translation databases. You can execute it with Node after compiling:
+
+```bash
+npm run build:pkg:prepare
+node dist/backend/cli.js list --db ./translations.sqlite --locale es
+```
+
+To distribute a standalone binary, install [`pkg`](https://github.com/vercel/pkg) globally (`npm install -g pkg`) or run it via `npx`, then build:
+
+```bash
+npm run build:pkg
+```
+
+This produces `dist/transmut` (Linux x64 by default) together with `dist/sql-wasm.wasm`. Ship both files and ensure `SQLJS_WASM_PATH` points to the WASM if you relocate it.
+
+The CLI supports three commands:
+
+-   `upsert --db <file> --locale <lang[-REGION]> --input <json or ->` — merge JSON translations into the database (STDIN with `-`).
+-   `list --db <file> --locale <lang[-REGION]>` — dump stored entries for inspection/export.
+-   `load --db <file> --locale <lang[-REGION]> --keys key1,key2` — fetch a subset, honouring base-locale fallback unless `--no-fallback` is passed.
 
 ## Constructor Signature
 

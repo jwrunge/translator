@@ -4,11 +4,15 @@
 	"version": "0.0.1",
 	"type": "module",
 	"scripts": {
-		"test": "vitest"
+		"test": "vitest",
+		"build:pkg": "npm run build:pkg:prepare && npm run build:pkg:copy-wasm && pkg dist/backend/cli.js --targets node20-linux-x64 --output dist/transmut",
+		"build:pkg:prepare": "rm -rf dist && tsc -p tsconfig.pkg.json",
+		"build:pkg:copy-wasm": "mkdir -p dist && cp node_modules/sql.js/dist/sql-wasm.wasm dist/sql-wasm.wasm"
 	},
 	"devDependencies": {
 		"@types/node": "^22.7.5",
 		"jsdom": "^24.1.1",
+		"pkg": "^5.8.1",
 		"typescript": "~5.9.3",
 		"vitest": "^2.1.3"
 	},
