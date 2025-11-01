@@ -40,6 +40,7 @@ export default class TranslationObserver {
 
 	#getTranslations: GetTransMapFn;
 	#debugCycle = 0;
+	#debugInitLogged = false;
 
 	constructor(
 		defaultLangCode = "en",
@@ -1014,6 +1015,11 @@ export default class TranslationObserver {
 	}
 
 	#handlePotentialText = (node: Node): void => {
+		if (!this.#debugInitLogged) {
+			this.#debugInitLogged = true;
+			this.#debugLog("debug logging active");
+		}
+
 		if (node.nodeType === Node.TEXT_NODE) {
 			const textNode = node as Text;
 			const content = textNode.textContent ?? "";

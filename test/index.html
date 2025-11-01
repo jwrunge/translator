@@ -94,6 +94,11 @@
 				</button>
 			</section>
 		</main>
-		<script type="module" src="./dist/frontend.js"></script>
+		<script type="module">
+			const script = document.createElement("script");
+			script.type = "module";
+			script.src = `./dist/frontend.js?v=${Date.now()}`;
+			document.head.appendChild(script);
+		</script>
 	</body>
 </html>
