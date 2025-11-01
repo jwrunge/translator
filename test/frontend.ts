@@ -5,9 +5,7 @@ type Locale = Parameters<GetTransMapFn>[0];
 
 const API_URL = "http://localhost:4000/translations";
 
-console.log(
-	`[translator-demo] bundle loaded at ${new Date().toISOString()}`
-);
+console.log(`[translator-demo] bundle loaded at ${new Date().toISOString()}`);
 
 let requestCounter = 0;
 
