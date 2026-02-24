@@ -17,11 +17,13 @@
 		"build:pkg:copy-wasm": "mkdir -p dist && cp node_modules/sql.js/dist/sql-wasm.wasm dist/sql-wasm.wasm",
 		"example:build": "esbuild ./test/frontend.ts --bundle --format=esm --platform=browser --target=es2022 --sourcemap --outdir=./test/dist",
 		"example:watch": "esbuild ./test/frontend.ts --bundle --format=esm --platform=browser --target=es2022 --sourcemap --outdir=./test/dist --watch",
-		"example:backend": "tsx ./test/backend.ts"
+		"example:backend": "tsx ./test/backend.ts",
+		"example:serve": "http-server ./test -p 3000 -c-1"
 	},
 	"devDependencies": {
 		"@types/node": "^22.7.5",
 		"esbuild": "^0.24.0",
+		"http-server": "^14.1.1",
 		"jsdom": "^24.1.1",
 		"pkg": "^5.8.1",
 		"tsx": "^4.19.1",

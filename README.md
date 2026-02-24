@@ -204,6 +204,35 @@ You can customise placeholder detection via the `variablePattern` and `variableN
 
 Attributes listed in `data-transmut-attrs` or matched by the default list (`title`, `aria-label`, `aria-description`, `placeholder`, `alt`) are translated alongside text. Opt in using directives or selectors when `requireExplicitOptIn` is enabled.
 
+### Svelte Patterns
+
+In Svelte, `{value}` expressions are resolved before the observer sees the DOM. For predictable translation keys and safe reconstruction, prefer literal placeholders in text plus `data-transmut-*` value attributes.
+
+```svelte
+<p
+	data-transmut="include"
+	data-transmut-myfavoritefood={myFavoriteFood}
+>
+	I love ${myFavoriteFood}!
+</p>
+```
+
+This yields the translation key `I love {}!` and reinserts the runtime value from `data-transmut-myfavoritefood`.
+
+For sensitive/dynamic values such as emails, UUIDs, or URLs:
+
+-   They are protected by default and normalized to `{}` in lookup keys.
+-   Keep `requireExplicitOptIn: true` so only marked content is translated.
+-   Use `data-transmut-skip` on subtrees that should never be translated.
+
+Example with mixed translated/static-sensitive content:
+
+```svelte
+<p data-transmut="include">
+	My email address is <span data-transmut-skip>{myEmail}</span>.
+</p>
+```
+
 ## Options Reference
 
 `TranslationObserverOptions` control how the observer targets nodes and handles directionality.
