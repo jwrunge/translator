@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
+import { createServer, type IncomingMessage } from "node:http";
 import { dirname, join } from "node:path";
 import { argv, execPath, stdin as input } from "node:process";
 
@@ -16,6 +17,7 @@ interface CliArgs {
 	locale: string | null;
 	inputPath: string | null;
 	keys: string[];
+	port: number;
 	markAsEdited: boolean;
 	fallbackToBaseLocale: boolean;
 }
@@ -32,6 +34,7 @@ function parseArgs(argv: string[]): CliArgs {
 		locale: null,
 		inputPath: null,
 		keys: [],
+		port: 4000,
 		markAsEdited: false,
 		fallbackToBaseLocale: true,
 	};
@@ -62,6 +65,15 @@ function parseArgs(argv: string[]): CliArgs {
 				}
 				break;
 			}
+			case "--port": {
+				const raw = rest[++index] ?? "";
+				const parsed = Number.parseInt(raw, 10);
+				if (!Number.isFinite(parsed) || parsed <= 0) {
+					throw new Error("--port must be a positive integer.");
+				}
+				result.port = parsed;
+				break;
+			}
 			case "--mark-edited":
 				result.markAsEdited = true;
 				break;
@@ -75,6 +87,31 @@ function parseArgs(argv: string[]): CliArgs {
 	}
 
 	return result;
+}
+
+function splitKeys(value: string | null): string[] {
+	if (!value) {
+		return [];
+	}
+
+	return value
+		.split(",")
+		.map((key) => key.trim())
+		.filter(Boolean);
+}
+
+async function readRequestJson(request: IncomingMessage): Promise<unknown> {
+	const chunks: Buffer[] = [];
+	for await (const chunk of request) {
+		chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+	}
+
+	const body = Buffer.concat(chunks).toString("utf8").trim();
+	if (!body) {
+		return {};
+	}
+
+	return JSON.parse(body);
 }
 
 function normalizeLocaleInput(locale: string | null): {
@@ -113,10 +150,12 @@ function printUsage(): void {
   transmut upsert --db <path> --locale <lang[-REGION]> --input <file|- > [--mark-edited]
   transmut list --db <path> --locale <lang[-REGION]>
   transmut load --db <path> --locale <lang[-REGION]> --keys key1,key2 [--no-fallback]
+	transmut serve --db <path> [--port <number>] [--no-fallback]
 
 Examples:
   transmut upsert --db translations.sqlite --locale es-MX --input translations.json
   cat translations.json | transmut upsert --db translations.sqlite --locale es
+	transmut serve --db translations.sqlite --port 4000
 `);
 }
 
@@ -137,10 +176,9 @@ async function main(): Promise<void> {
 			throw new Error("A --db path is required.");
 		}
 
-		const locale = normalizeLocaleInput(args.locale);
-
 		switch (args.command) {
 			case "upsert": {
+				const locale = normalizeLocaleInput(args.locale);
 				const payload = await readInputJson(args.inputPath);
 				if (typeof payload !== "object" || payload === null) {
 					throw new Error("Input JSON must be an object or array.");
@@ -159,6 +197,7 @@ async function main(): Promise<void> {
 				break;
 			}
 			case "list": {
+				const locale = normalizeLocaleInput(args.locale);
 				const results = await listTranslations({
 					databasePath: args.databasePath,
 					locale,
@@ -167,6 +206,7 @@ async function main(): Promise<void> {
 				break;
 			}
 			case "load": {
+				const locale = normalizeLocaleInput(args.locale);
 				if (args.keys.length === 0) {
 					throw new Error("--keys is required for the load command.");
 				}
@@ -184,13 +224,92 @@ async function main(): Promise<void> {
 					args.databasePath,
 					{ fallbackToBaseLocale: args.fallbackToBaseLocale }
 				);
-				process.stdout.write(
-					`Translation provider ready for database ${args.databasePath}.\n`
-				);
-				process.stdout.write(
-					`Invoke this function from your server code.\n`
-				);
-				process.stdout.write(`${provider.toString()}\n`);
+
+				const server = createServer(async (request, response) => {
+					try {
+						const requestUrl = new URL(
+							request.url ?? "/",
+							`http://localhost:${args.port}`
+						);
+
+						if (requestUrl.pathname !== "/translations") {
+							response.statusCode = 404;
+							response.setHeader("Content-Type", "application/json");
+							response.end(
+								JSON.stringify({ error: "Not found" })
+							);
+							return;
+						}
+
+						let langCode = requestUrl.searchParams.get("langCode") ?? "";
+						let region = requestUrl.searchParams.get("region") ?? "";
+						let keys = splitKeys(requestUrl.searchParams.get("keys"));
+
+						if (request.method === "POST") {
+							const payload = await readRequestJson(request);
+							if (payload && typeof payload === "object") {
+								const data = payload as {
+									langCode?: unknown;
+									region?: unknown;
+									keys?: unknown;
+								};
+								if (typeof data.langCode === "string") {
+									langCode = data.langCode;
+								}
+								if (typeof data.region === "string") {
+									region = data.region;
+								}
+								if (Array.isArray(data.keys)) {
+									keys = data.keys.filter(
+										(key): key is string =>
+											typeof key === "string" &&
+											key.trim().length > 0
+									);
+								}
+							}
+						}
+
+						if (!langCode || keys.length === 0) {
+							response.statusCode = 400;
+							response.setHeader("Content-Type", "application/json");
+							response.end(
+								JSON.stringify({
+									error: "langCode and keys are required",
+								})
+							);
+							return;
+						}
+
+						const translations = await provider(
+							{ langCode, region: region || undefined },
+							keys
+						);
+
+						response.statusCode = 200;
+						response.setHeader("Content-Type", "application/json");
+						response.end(JSON.stringify(translations));
+					} catch (error) {
+						response.statusCode = 500;
+						response.setHeader("Content-Type", "application/json");
+						response.end(
+							JSON.stringify({
+								error:
+									error instanceof Error
+										? error.message
+										: "Failed to load translations",
+							})
+						);
+					}
+				});
+
+				server.listen(args.port, () => {
+					process.stdout.write(
+						`Transmut server listening on http://localhost:${args.port}/translations\n`
+					);
+					process.stdout.write(
+						`Using database ${args.databasePath}\n`
+					);
+				});
 				break;
 			}
 			default:

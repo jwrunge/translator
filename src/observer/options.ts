@@ -1,6 +1,7 @@
 import {
 	DEFAULT_ATTRIBUTE_NAMES,
 	DEFAULT_DIRECTION_OVERRIDES,
+	DEFAULT_PROTECTED_PATTERNS,
 	DEFAULT_VARIABLE_PATTERN,
 } from "./constants";
 import type {
@@ -40,6 +41,10 @@ export function resolveObserverOptions(
 	const variablePatternInput =
 		options?.variablePattern ?? DEFAULT_VARIABLE_PATTERN;
 	const variablePattern = cloneRegex(variablePatternInput);
+	const protectedPatterns =
+		options?.protectedPatterns && options.protectedPatterns.length > 0
+			? options.protectedPatterns.map((pattern) => cloneRegex(pattern))
+			: DEFAULT_PROTECTED_PATTERNS.map((pattern) => cloneRegex(pattern));
 
 	let variableNameGroup = 1;
 	if (
@@ -66,6 +71,7 @@ export function resolveObserverOptions(
 		directionOverrides,
 		variablePattern,
 		variableNameGroup,
+		protectedPatterns,
 	};
 }
 

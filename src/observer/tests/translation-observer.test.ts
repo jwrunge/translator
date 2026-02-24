@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+import { JSDOM } from "jsdom";
 import {
 	afterAll,
 	afterEach,
@@ -16,6 +18,15 @@ const flushAsync = async (): Promise<void> => {
 
 describe("TranslationObserver", () => {
 	let observer: TranslationObserver | null = null;
+	let dom: JSDOM | null = null;
+	const originalWindow = globalThis.window;
+	const originalDocument = globalThis.document;
+	const originalNavigator = globalThis.navigator;
+	const originalNode = globalThis.Node;
+	const originalElement = globalThis.Element;
+	const originalHTMLElement = globalThis.HTMLElement;
+	const originalShadowRoot = globalThis.ShadowRoot;
+	const originalText = globalThis.Text;
 	const OriginalMutationObserver = globalThis.MutationObserver;
 
 	class TestMutationObserver implements MutationObserver {
@@ -31,6 +42,51 @@ describe("TranslationObserver", () => {
 	}
 
 	beforeAll(() => {
+		dom = new JSDOM("<!doctype html><html><body></body></html>", {
+			url: "https://example.test",
+		});
+
+		(
+			globalThis as unknown as {
+				window: Window & typeof globalThis;
+			}
+		).window = dom.window as unknown as Window & typeof globalThis;
+		(
+			globalThis as unknown as {
+				document: Document;
+			}
+		).document = dom.window.document;
+		(
+			globalThis as unknown as {
+				navigator: Navigator;
+			}
+		).navigator = dom.window.navigator;
+		(
+			globalThis as unknown as {
+				Node: typeof Node;
+			}
+		).Node = dom.window.Node;
+		(
+			globalThis as unknown as {
+				Element: typeof Element;
+			}
+		).Element = dom.window.Element;
+		(
+			globalThis as unknown as {
+				HTMLElement: typeof HTMLElement;
+			}
+		).HTMLElement = dom.window.HTMLElement;
+		(
+			globalThis as unknown as {
+				ShadowRoot: typeof ShadowRoot;
+			}
+		).ShadowRoot = dom.window.ShadowRoot;
+		(
+			globalThis as unknown as {
+				Text: typeof Text;
+			}
+		).Text = dom.window.Text;
+
 		(
 			globalThis as unknown as {
 				MutationObserver: typeof MutationObserver;
@@ -46,11 +102,70 @@ describe("TranslationObserver", () => {
 	});
 
 	afterAll(() => {
+		if (originalWindow) {
+			(
+				globalThis as unknown as {
+					window: Window & typeof globalThis;
+				}
+			).window = originalWindow;
+		}
+		if (originalDocument) {
+			(
+				globalThis as unknown as {
+					document: Document;
+				}
+			).document = originalDocument;
+		}
+		if (originalNavigator) {
+			(
+				globalThis as unknown as {
+					navigator: Navigator;
+				}
+			).navigator = originalNavigator;
+		}
+		if (originalNode) {
+			(
+				globalThis as unknown as {
+					Node: typeof Node;
+				}
+			).Node = originalNode;
+		}
+		if (originalElement) {
+			(
+				globalThis as unknown as {
+					Element: typeof Element;
+				}
+			).Element = originalElement;
+		}
+		if (originalHTMLElement) {
+			(
+				globalThis as unknown as {
+					HTMLElement: typeof HTMLElement;
+				}
+			).HTMLElement = originalHTMLElement;
+		}
+		if (originalShadowRoot) {
+			(
+				globalThis as unknown as {
+					ShadowRoot: typeof ShadowRoot;
+				}
+			).ShadowRoot = originalShadowRoot;
+		}
+		if (originalText) {
+			(
+				globalThis as unknown as {
+					Text: typeof Text;
+				}
+			).Text = originalText;
+		}
 		(
 			globalThis as unknown as {
 				MutationObserver?: typeof MutationObserver;
 			}
 		).MutationObserver = OriginalMutationObserver;
+
+		dom?.window.close();
+		dom = null;
 	});
 
 	it("translates text nodes with dynamic placeholders", async () => {
@@ -148,6 +263,56 @@ describe("TranslationObserver", () => {
 		expect(requestedKeys).not.toContain("Do not translate me");
 		expect(document.querySelector("p")?.textContent).toBe(
 			"Do not translate me"
+		);
+	});
+
+	it("preserves protected email, uuid, and url values while translating surrounding text", async () => {
+		document.body.innerHTML = `
+			<p data-transmut="include">
+				My email is person@example.com, session 550e8400-e29b-41d4-a716-446655440000, docs https://example.com/help and 12 alerts.
+			</p>
+		`;
+
+		const getTranslations = vi.fn(async (_locale, keys: string[]) => {
+			return Object.fromEntries(
+				keys.map((key) => {
+					const normalizedKey = key.replace(/\s+/g, " ").trim();
+					if (
+						normalizedKey ===
+						"My email is {}, session {}, docs {} and {} alerts."
+					) {
+						return [
+							key,
+							"Mi correo es {}, sesión {}, docs {} y {} alertas.",
+						];
+					}
+
+					return [key, key];
+				})
+			);
+		});
+
+		observer = new TranslationObserver(
+			"en",
+			"es-MX",
+			getTranslations,
+			undefined,
+			undefined,
+			{ requireExplicitOptIn: true }
+		);
+
+		await flushAsync();
+
+		const requestedKeys = getTranslations.mock.calls
+			.flatMap(([, keys]) => keys)
+			.map((key) => key.replace(/\s+/g, " ").trim());
+		expect(requestedKeys).toContain(
+			"My email is {}, session {}, docs {} and {} alerts."
+		);
+
+		const paragraph = document.querySelector("p");
+		expect(paragraph?.textContent?.replace(/\s+/g, " ").trim()).toBe(
+			"Mi correo es person@example.com, sesión 550e8400-e29b-41d4-a716-446655440000, docs https://example.com/help y 12 alertas."
 		);
 	});
 });

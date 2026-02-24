@@ -47,7 +47,7 @@ Bundlers such as Vite/Esbuild can compile the `.ts` sources during your build. I
 ## Quick Start
 
 ```ts
-import TranslationObserver from "./src/observer";
+import { TranslationObserver } from "transmut";
 
 const observer = new TranslationObserver(
 	"en-US", // default/source locale
@@ -159,7 +159,7 @@ new TranslationObserver(
 
 ### Lifecycle Helpers
 
--   `changeLocale(langCode?: string, region?: string): Promise<void>` — updates the target locale and reapplies language metadata.
+-   `changeLocale(langCode?: string, region?: string): Promise<void>` — updates the target locale, reapplies language metadata, and re-translates tracked nodes/attributes.
 -   `observeShadowRoot(root: ShadowRoot): void` — explicitly opt a shadow root into observation.
 -   `disconnect(): void` — stop observing mutations and close caches. Call this when tearing down your app.
 
@@ -180,6 +180,12 @@ The observer uses `data-transmut-*` directives to decide what to translate.
 ### Dynamic Content Placeholders
 
 Source strings that contain placeholders are normalized before being sent to `getTranslations`. By default, `${variable}` tokens and numbers are replaced with `{}` in the translation key.
+
+By default, protected token patterns are also normalized to `{}` so unique values are preserved during reconstruction:
+
+-   Email addresses (e.g. `person@example.com`)
+-   UUIDs (e.g. `550e8400-e29b-41d4-a716-446655440000`)
+-   HTTP(S) URLs (e.g. `https://example.com/help`)
 
 Example:
 
@@ -214,6 +220,7 @@ Attributes listed in `data-transmut-attrs` or matched by the default list (`titl
 | `directionOverrides`    | `Record<string, 'ltr' \| 'rtl'>` | `DEFAULT_DIRECTION_OVERRIDES`                     | Extend or override the built-in map of locale → direction. Keys should be lowercase BCP 47 tags. |
 | `variablePattern`       | `RegExp`                         | `/\${\s*([^}]+?)\s*}/g`                           | Pattern used to detect variable placeholders. Must be global (`g`).                              |
 | `variableNameGroup`     | `number`                         | `1`                                               | Capture group index that contains the placeholder name.                                          |
+| `protectedPatterns`     | `RegExp[]`                       | email, UUID, and URL defaults                     | Additional token patterns replaced with `{}` during lookup and restored after translation.       |
 
 ## Translation Cache
 

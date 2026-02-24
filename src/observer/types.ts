@@ -19,6 +19,7 @@ export interface TranslationObserverOptions {
 	directionOverrides?: Record<string, "ltr" | "rtl">;
 	variablePattern?: RegExp;
 	variableNameGroup?: number;
+	protectedPatterns?: RegExp[];
 }
 
 export interface ResolvedObserverOptions {
@@ -32,11 +33,15 @@ export interface ResolvedObserverOptions {
 	directionOverrides: Record<string, "ltr" | "rtl">;
 	variablePattern: RegExp;
 	variableNameGroup: number;
+	protectedPatterns: RegExp[];
 }
 
 export interface AttributeState {
 	translated: boolean;
 	lastValue: string;
+	sourceValue: string;
+	sourceKey: string;
+	sourceFragments?: DynamicFragment[];
 	pendingSource?: string;
 	normalizedKey?: string;
 	fragments?: DynamicFragment[];
@@ -51,6 +56,9 @@ export interface SectionLocaleDirective {
 export interface NodeState {
 	translated: boolean;
 	lastText: string;
+	sourceText: string;
+	sourceKey: string;
+	sourceFragments?: DynamicFragment[];
 	pendingSource?: string;
 	normalizedKey?: string;
 	fragments?: DynamicFragment[];
@@ -65,6 +73,10 @@ export type DynamicFragment =
 	| {
 			type: "number";
 			raw: string;
+	  }
+	| {
+			type: "protected";
+			raw: string;
 	  };
 
 export type DynamicFragmentMatch =
@@ -77,6 +89,12 @@ export type DynamicFragmentMatch =
 	  }
 	| {
 			type: "number";
+			raw: string;
+			start: number;
+			end: number;
+	  }
+	| {
+			type: "protected";
 			raw: string;
 			start: number;
 			end: number;

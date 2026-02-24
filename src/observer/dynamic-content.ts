@@ -5,12 +5,14 @@ export interface NormalizationResult {
 	normalized: string;
 	hasVariables: boolean;
 	hasNumbers: boolean;
+	hasProtected: boolean;
 	fragments: DynamicFragment[];
 }
 
 interface DynamicContentConfig {
 	variablePattern: RegExp;
 	variableNameGroup: number;
+	protectedPatterns: RegExp[];
 	placeholderToken?: string;
 }
 
@@ -21,15 +23,20 @@ export class DynamicContentHelper {
 	private readonly placeholderToken: string;
 	private readonly variablePattern: RegExp;
 	private readonly variableNameGroup: number;
+	private readonly protectedPatterns: RegExp[];
 
 	constructor({
 		variablePattern,
 		variableNameGroup,
+		protectedPatterns,
 		placeholderToken = DEFAULT_PLACEHOLDER_TOKEN,
 	}: DynamicContentConfig) {
 		this.placeholderToken = placeholderToken;
 		this.variablePattern = cloneRegex(variablePattern);
 		this.variableNameGroup = variableNameGroup;
+		this.protectedPatterns = protectedPatterns.map((pattern) =>
+			cloneRegex(pattern)
+		);
 	}
 
 	normalize(text: string): NormalizationResult {
@@ -39,6 +46,7 @@ export class DynamicContentHelper {
 				normalized: text,
 				hasVariables: false,
 				hasNumbers: false,
+				hasProtected: false,
 				fragments: [],
 			};
 		}
@@ -49,6 +57,13 @@ export class DynamicContentHelper {
 					type: "variable" as const,
 					raw: match.raw,
 					name: match.name,
+				};
+			}
+
+			if (match.type === "protected") {
+				return {
+					type: "protected" as const,
+					raw: match.raw,
 				};
 			}
 
@@ -73,11 +88,15 @@ export class DynamicContentHelper {
 		const hasNumbers = fragments.some(
 			(fragment) => fragment.type === "number"
 		);
+		const hasProtected = fragments.some(
+			(fragment) => fragment.type === "protected"
+		);
 
 		return {
 			normalized: normalizedParts.join(""),
 			hasVariables,
 			hasNumbers,
+			hasProtected,
 			fragments,
 		};
 	}
@@ -108,7 +127,7 @@ export class DynamicContentHelper {
 	}
 
 	collectMatches(text: string): DynamicFragmentMatch[] {
-		const matches: DynamicFragmentMatch[] = [];
+		const candidates: DynamicFragmentMatch[] = [];
 
 		this.variablePattern.lastIndex = 0;
 		let variableMatch: RegExpExecArray | null;
@@ -131,7 +150,7 @@ export class DynamicContentHelper {
 				name = this.sanitizeVariableName(raw);
 			}
 
-			matches.push({
+			candidates.push({
 				type: "variable",
 				raw,
 				name,
@@ -140,11 +159,25 @@ export class DynamicContentHelper {
 			});
 		}
 
+		for (const pattern of this.protectedPatterns) {
+			pattern.lastIndex = 0;
+			let protectedMatch: RegExpExecArray | null;
+			while ((protectedMatch = pattern.exec(text)) !== null) {
+				const raw = protectedMatch[0];
+				candidates.push({
+					type: "protected",
+					raw,
+					start: protectedMatch.index,
+					end: protectedMatch.index + raw.length,
+				});
+			}
+		}
+
 		NUMBER_PATTERN.lastIndex = 0;
 		let numberMatch: RegExpExecArray | null;
 		while ((numberMatch = NUMBER_PATTERN.exec(text)) !== null) {
 			const raw = numberMatch[0];
-			matches.push({
+			candidates.push({
 				type: "number",
 				raw,
 				start: numberMatch.index,
@@ -152,8 +185,46 @@ export class DynamicContentHelper {
 			});
 		}
 
-		matches.sort((a, b) => a.start - b.start);
+		candidates.sort((a, b) => {
+			if (a.start !== b.start) {
+				return a.start - b.start;
+			}
+
+			const priorityDiff =
+				this.matchPriority(b.type) - this.matchPriority(a.type);
+			if (priorityDiff !== 0) {
+				return priorityDiff;
+			}
+
+			const spanA = a.end - a.start;
+			const spanB = b.end - b.start;
+			return spanB - spanA;
+		});
+
+		const matches: DynamicFragmentMatch[] = [];
+		let occupiedUntil = -1;
+		for (const match of candidates) {
+			if (match.start < occupiedUntil) {
+				continue;
+			}
+
+			matches.push(match);
+			occupiedUntil = match.end;
+		}
+
 		return matches;
+	}
+
+	private matchPriority(type: DynamicFragmentMatch["type"]): number {
+		switch (type) {
+			case "variable":
+				return 3;
+			case "protected":
+				return 2;
+			case "number":
+			default:
+				return 1;
+		}
 	}
 
 	private sanitizeVariableName(name: string | undefined): string | undefined {

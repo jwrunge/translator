@@ -54,6 +54,7 @@ export default class TranslationObserver {
 		this.#dynamicContent = new DynamicContentHelper({
 			variablePattern: this.#options.variablePattern,
 			variableNameGroup: this.#options.variableNameGroup,
+			protectedPatterns: this.#options.protectedPatterns,
 		});
 
 		if (typeof MutationObserver === "undefined") {
@@ -68,31 +69,28 @@ export default class TranslationObserver {
 		}
 		this.#observedRoots.add(rootNode);
 
-		if (!navigator?.language) {
-			throw new Error("Unable to access navigator language settings.");
-		}
-
 		if (!getTranslations) {
 			throw new Error("A getTranslations function must be provided.");
 		}
-
-		if (locale) {
-			const [lang, region] = locale.toLowerCase().split("-");
-			this.#langCode = lang;
-			this.#region = region ?? "";
-		} else {
-			[this.#langCode, this.#region] = navigator.language
-				.toLowerCase()
-				.split("-");
-		}
+		this.#getTranslations = getTranslations;
 
 		const [defaultLang, defaultRegion] = defaultLangCode
 			.toLocaleLowerCase()
 			.split("-");
 		this.#defaultLanguage = defaultLang;
 		this.#defaultRegion = defaultRegion ?? "";
-		this.#langCode = defaultLang;
-		this.#region = defaultRegion ?? "";
+
+		const preferredLocale =
+			locale?.trim().length
+				? locale
+				: typeof navigator !== "undefined" && navigator.language
+				? navigator.language
+				: this.#composeLocaleTag(this.#defaultLanguage, this.#defaultRegion);
+		const [preferredLang, preferredRegion] = preferredLocale
+			.toLocaleLowerCase()
+			.split("-");
+		this.#langCode = preferredLang || this.#defaultLanguage;
+		this.#region = preferredRegion ?? "";
 
 		this.#cache = new TranslationCache(
 			this.#defaultLanguage,
@@ -101,13 +99,11 @@ export default class TranslationObserver {
 		);
 		this.#cache.setLocale(this.#langCode, this.#region);
 		this.#initPromise = this.#cache.initialize();
+		if (this.#options.setLanguageAttributes) {
+			this.#applyLanguageMetadata();
+		}
 
 		rootNode.classList.add(TRANSLATING_CLASS);
-		this.changeLocale().then(() =>
-			rootNode.classList.remove(TRANSLATING_CLASS)
-		);
-
-		this.#getTranslations = getTranslations;
 		this.#expiryMs =
 			typeof expiryHours === "number" && expiryHours > 0
 				? expiryHours * 60 * 60 * 1000
@@ -194,13 +190,18 @@ export default class TranslationObserver {
 		const initialBatch = Array.from(this.#transBatch);
 		this.#transBatch.clear();
 		if (initialBatch.length > 0) {
-			void this.#translate(initialBatch);
+			void this.#translate(initialBatch).finally(() =>
+				rootNode.classList.remove(TRANSLATING_CLASS)
+			);
+		} else {
+			rootNode.classList.remove(TRANSLATING_CLASS);
 		}
 	}
 
 	async changeLocale(langCode = "", region = "") {
 		await this.#initPromise;
 
+		const previousLocale = this.#getCurrentLocaleTag();
 		const nextLang = langCode || this.#defaultLanguage;
 		const nextRegion = region || this.#defaultRegion;
 		this.#langCode = nextLang;
@@ -209,6 +210,99 @@ export default class TranslationObserver {
 
 		if (this.#options.setLanguageAttributes) {
 			this.#applyLanguageMetadata();
+		}
+
+		if (
+			previousLocale.toLowerCase() ===
+			this.#getCurrentLocaleTag().toLowerCase()
+		) {
+			return;
+		}
+
+		await this.#retranslateFromSource();
+	}
+
+	async #retranslateFromSource(): Promise<void> {
+		this.#transBatch.clear();
+
+		for (const [node, state] of this.#nodeStates.entries()) {
+			const sourceText = state.sourceText || state.lastText;
+			if (node.textContent !== sourceText) {
+				node.textContent = sourceText;
+			}
+
+			const {
+				normalized,
+				hasVariables,
+				hasNumbers,
+				hasProtected,
+				fragments,
+			} = this.#normalizeText(sourceText);
+			const sourceKey =
+				hasVariables || hasNumbers || hasProtected
+					? normalized
+					: sourceText;
+
+			state.translated = false;
+			state.lastText = sourceText;
+			state.sourceText = sourceText;
+			state.sourceKey = sourceKey;
+			state.sourceFragments = fragments.length > 0 ? fragments : undefined;
+			state.pendingSource = sourceKey;
+			state.normalizedKey =
+				hasVariables || hasNumbers || hasProtected
+					? normalized
+					: undefined;
+			state.fragments = state.sourceFragments;
+			this.#nodeStates.set(node, state);
+			this.#transBatch.add(sourceKey);
+		}
+
+		for (const [element, attrMap] of this.#attrStates.entries()) {
+			for (const [attributeName, state] of attrMap.entries()) {
+				const sourceValue = state.sourceValue || state.lastValue;
+				if (element.getAttribute(attributeName) !== sourceValue) {
+					element.setAttribute(attributeName, sourceValue);
+				}
+
+				const {
+					normalized,
+					hasVariables,
+					hasNumbers,
+					hasProtected,
+					fragments,
+				} = this.#normalizeText(sourceValue);
+				const sourceKey =
+					hasVariables || hasNumbers || hasProtected
+						? normalized
+						: sourceValue;
+
+				state.translated = false;
+				state.lastValue = sourceValue;
+				state.sourceValue = sourceValue;
+				state.sourceKey = sourceKey;
+				state.sourceFragments =
+					fragments.length > 0 ? fragments : undefined;
+				state.pendingSource = sourceKey;
+				state.normalizedKey =
+					hasVariables || hasNumbers || hasProtected
+						? normalized
+						: undefined;
+				state.fragments = state.sourceFragments;
+				attrMap.set(attributeName, state);
+				this.#transBatch.add(sourceKey);
+			}
+		}
+
+		for (const root of this.#observedRoots) {
+			this.#handlePotentialText(root);
+			this.#handlePotentialAttributes(root);
+		}
+
+		const batch = Array.from(this.#transBatch);
+		this.#transBatch.clear();
+		if (batch.length > 0) {
+			await this.#translate(batch);
 		}
 	}
 
@@ -267,7 +361,7 @@ export default class TranslationObserver {
 			return flag;
 		}
 
-		return true;
+		return false;
 	}
 
 	#debugLog(...args: unknown[]): void {
@@ -756,17 +850,25 @@ export default class TranslationObserver {
 			return;
 		}
 
-		const { normalized, hasVariables, hasNumbers, fragments } =
+		const { normalized, hasVariables, hasNumbers, hasProtected, fragments } =
 			this.#normalizeText(currentValue);
 		const translationKey =
-			hasVariables || hasNumbers ? normalized : currentValue;
+			hasVariables || hasNumbers || hasProtected
+				? normalized
+				: currentValue;
 
 		this.#transBatch.add(translationKey);
 		attrMap.set(attributeName, {
 			translated: false,
 			lastValue: currentValue,
+			sourceValue: currentValue,
+			sourceKey: translationKey,
+			sourceFragments: fragments.length > 0 ? fragments : undefined,
 			pendingSource: translationKey,
-			normalizedKey: hasVariables || hasNumbers ? normalized : undefined,
+			normalizedKey:
+				hasVariables || hasNumbers || hasProtected
+					? normalized
+					: undefined,
 			fragments: fragments.length > 0 ? fragments : undefined,
 		});
 	}
@@ -1042,18 +1144,31 @@ export default class TranslationObserver {
 				return;
 			}
 
-			const { normalized, hasVariables, hasNumbers, fragments } =
+			const {
+				normalized,
+				hasVariables,
+				hasNumbers,
+				hasProtected,
+				fragments,
+			} =
 				this.#normalizeText(content);
 			const translationKey =
-				hasVariables || hasNumbers ? normalized : content;
+				hasVariables || hasNumbers || hasProtected
+					? normalized
+					: content;
 
 			this.#transBatch.add(translationKey);
 			this.#nodeStates.set(textNode, {
 				translated: false,
 				lastText: content,
+				sourceText: content,
+				sourceKey: translationKey,
+				sourceFragments: fragments.length > 0 ? fragments : undefined,
 				pendingSource: translationKey,
 				normalizedKey:
-					hasVariables || hasNumbers ? normalized : undefined,
+					hasVariables || hasNumbers || hasProtected
+						? normalized
+						: undefined,
 				fragments: fragments.length > 0 ? fragments : undefined,
 			});
 			return;
@@ -1171,8 +1286,23 @@ export default class TranslationObserver {
 
 			const currentText = node.textContent ?? "";
 			if (currentText !== state.lastText) {
+				const {
+					normalized,
+					hasVariables,
+					hasNumbers,
+					hasProtected,
+					fragments,
+				} = this.#normalizeText(currentText);
+				const sourceKey =
+					hasVariables || hasNumbers || hasProtected
+						? normalized
+						: currentText;
+
 				state.translated = false;
 				state.lastText = currentText;
+				state.sourceText = currentText;
+				state.sourceKey = sourceKey;
+				state.sourceFragments = fragments.length > 0 ? fragments : undefined;
 				state.pendingSource = undefined;
 				state.normalizedKey = undefined;
 				state.fragments = undefined;
@@ -1219,8 +1349,24 @@ export default class TranslationObserver {
 
 				const currentValue = element.getAttribute(attributeName) ?? "";
 				if (currentValue !== attrState.lastValue) {
+					const {
+						normalized,
+						hasVariables,
+						hasNumbers,
+						hasProtected,
+						fragments,
+					} = this.#normalizeText(currentValue);
+					const sourceKey =
+						hasVariables || hasNumbers || hasProtected
+							? normalized
+							: currentValue;
+
 					attrState.translated = false;
 					attrState.lastValue = currentValue;
+					attrState.sourceValue = currentValue;
+					attrState.sourceKey = sourceKey;
+					attrState.sourceFragments =
+						fragments.length > 0 ? fragments : undefined;
 					attrState.pendingSource = undefined;
 					attrState.normalizedKey = undefined;
 					attrState.fragments = undefined;
