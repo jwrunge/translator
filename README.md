@@ -8,7 +8,7 @@ This package currently ships as source. Add it to your project as a workspace pa
 
 ```bash
 # via npm workspaces or a relative dependency
-npm install transmut
+npm install @jwrunge/transmut
 ```
 
 Vitest is configured for local testing (`npm test`).
@@ -22,8 +22,8 @@ You can import the sources directly without a publish step. Add a path mapping s
 {
 	"compilerOptions": {
 		"paths": {
-			"transmut": ["./node_modules/transmut/src/index.ts"],
-			"transmut/*": ["./node_modules/transmut/src/*"]
+			"@jwrunge/transmut": ["./node_modules/@jwrunge/transmut/src/index.ts"],
+			"@jwrunge/transmut/*": ["./node_modules/@jwrunge/transmut/src/*"]
 		}
 	}
 }
@@ -32,7 +32,7 @@ You can import the sources directly without a publish step. Add a path mapping s
 Then import the observer or the SQLite helpers straight from your code:
 
 ```ts
-import { TranslationObserver, upsertTranslations } from "transmut";
+import { TranslationObserver, upsertTranslations } from "@jwrunge/transmut";
 
 const observer = new TranslationObserver(/* ... */);
 await upsertTranslations({
@@ -47,7 +47,7 @@ Bundlers such as Vite/Esbuild can compile the `.ts` sources during your build. I
 ## Quick Start
 
 ```ts
-import { TranslationObserver } from "transmut";
+import { TranslationObserver } from "@jwrunge/transmut";
 
 const observer = new TranslationObserver(
 	"en-US", // default/source locale

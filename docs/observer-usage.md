@@ -47,7 +47,7 @@ This example shows how to opt-in elements, translate attributes, and work with s
 		</main>
 
 		<script type="module">
-			import { TranslationObserver } from "transmut";
+			import { TranslationObserver } from "@jwrunge/transmut";
 
 			const observer = new TranslationObserver(
 				"en",
