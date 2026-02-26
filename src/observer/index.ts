@@ -298,6 +298,10 @@ export default class TranslationObserver {
 			}
 		}
 
+		// Drain mutation records caused by resetting nodes to source text
+		// so the observer callback doesn't re-process our own writes.
+		this.#mutObserver.takeRecords();
+
 		for (const root of this.#observedRoots) {
 			this.#handlePotentialText(root);
 			this.#handlePotentialAttributes(root);
@@ -882,8 +886,10 @@ export default class TranslationObserver {
 		const existing = attrMap.get(attributeName);
 		const now = Date.now();
 		if (existing?.translated && existing.lastValue === currentValue) {
+			// Skip if translation succeeded (no retry needed) or retry
+			// timer hasn't expired yet. Only re-process once retryAfter passes.
 			if (
-				typeof existing.retryAfter === "number" &&
+				typeof existing.retryAfter !== "number" ||
 				existing.retryAfter > now
 			) {
 				return;
@@ -1216,8 +1222,10 @@ export default class TranslationObserver {
 			const now = Date.now();
 
 			if (existing?.translated && existing.lastText === content) {
+				// Skip if translation succeeded (no retry needed) or retry
+				// timer hasn't expired yet. Only re-process once retryAfter passes.
 				if (
-					typeof existing.retryAfter === "number" &&
+					typeof existing.retryAfter !== "number" ||
 					existing.retryAfter > now
 				) {
 					return;
@@ -1468,6 +1476,10 @@ export default class TranslationObserver {
 			}
 		}
 
+		// Drain any mutation records triggered by the text-node writes above
+		// so the observer callback isn't invoked for our own changes.
+		this.#mutObserver.takeRecords();
+
 		for (const [element, attrMap] of this.#attrStates.entries()) {
 			for (const [attributeName, attrState] of attrMap.entries()) {
 				if (
@@ -1551,6 +1563,10 @@ export default class TranslationObserver {
 				}
 			}
 		}
+
+		// Drain any mutation records triggered by the attribute writes above
+		// so the observer callback isn't invoked for our own changes.
+		this.#mutObserver.takeRecords();
 	}
 
 	#cleanupNode = (node: Node): void => {
