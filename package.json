@@ -1,6 +1,6 @@
 {
 	"name": "@jwrunge/transmut",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"type": "module",
 	"main": "./src/index.ts",
 	"types": "./src/index.ts",
@@ -22,7 +22,7 @@
 		"build:pkg": "npm run build:pkg:prepare && npm run build:pkg:copy-wasm && pkg dist/backend/cli.js --targets node20-linux-x64 --output dist/transmut",
 		"build:pkg:prepare": "rm -rf dist && tsc -p tsconfig.pkg.json",
 		"build:pkg:copy-wasm": "mkdir -p dist && cp node_modules/sql.js/dist/sql-wasm.wasm dist/sql-wasm.wasm",
-		"example:build": "esbuild ./test/frontend.ts --bundle --format=esm --platform=browser --target=es2022 --sourcemap --outdir=./test/dist",
+		"example:build": "esbuild ./test/frontend.tzxzs --bundle --format=esm --platform=browser --target=es2022 --sourcemap --outdir=./test/dist",
 		"example:watch": "esbuild ./test/frontend.ts --bundle --format=esm --platform=browser --target=es2022 --sourcemap --outdir=./test/dist --watch",
 		"example:backend": "tsx ./test/backend.ts",
 		"example:serve": "http-server ./test -p 3000 -c-1"
