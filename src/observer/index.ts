@@ -454,6 +454,22 @@ export default class TranslationObserver {
 		return this.#composeLocaleTag(this.#langCode, this.#region);
 	}
 
+	#isSourceLocale(): boolean {
+		const currentLang = (this.#langCode ?? "").toLowerCase();
+		const defaultLang = (this.#defaultLanguage ?? "").toLowerCase();
+		if (!currentLang || currentLang !== defaultLang) {
+			return false;
+		}
+
+		const currentRegion = (this.#region ?? "").toLowerCase();
+		const defaultRegion = (this.#defaultRegion ?? "").toLowerCase();
+		if (!currentRegion || !defaultRegion) {
+			return true;
+		}
+
+		return currentRegion === defaultRegion;
+	}
+
 	#composeLocaleTag(lang: string, region: string): string {
 		const trimmedLang = (lang ?? "").toLowerCase();
 		const trimmedRegion = (region ?? "").toUpperCase();
@@ -1041,6 +1057,20 @@ export default class TranslationObserver {
 
 	#normalizeText = (text: string) => this.#dynamicContent.normalize(text);
 
+	#shouldPreserveNumericSourceSpacing(): boolean {
+		const compactSpacingLanguages = new Set([
+			"zh",
+			"ja",
+			"ko",
+			"th",
+			"lo",
+			"km",
+			"my",
+		]);
+
+		return !compactSpacingLanguages.has(this.#langCode.toLowerCase());
+	}
+
 	#reconstructText = (
 		translatedBase: string,
 		fragments: DynamicFragment[] | undefined,
@@ -1050,7 +1080,8 @@ export default class TranslationObserver {
 			translatedBase,
 			fragments,
 			(variableFragment) =>
-				this.#resolveVariableValue(container, variableFragment)
+				this.#resolveVariableValue(container, variableFragment),
+			{ preserveNumberSourceSpacing: this.#shouldPreserveNumericSourceSpacing() }
 		);
 
 	#resolveVariableValue(
@@ -1221,14 +1252,27 @@ export default class TranslationObserver {
 			}
 		}
 
+		if (Object.keys(resolved).length > 0) {
+			this.#applyTranslationsToPending(batch, resolved, false);
+		}
+
 		const isOffline =
 			typeof navigator !== "undefined"
 				? navigator.onLine === false
 				: false;
+		const isSourceLocale = this.#isSourceLocale();
 		const keysNeedingFetch = isOffline
+			? []
+			: isSourceLocale
 			? []
 			: Array.from(new Set([...missingKeys, ...staleKeys]));
 		let fetched: TranslationMap = {};
+
+		if (isSourceLocale && this.#debugEnabled()) {
+			this.#debugLog(
+				`skipping fetch for source locale ${this.#getCurrentLocaleTag()}`
+			);
+		}
 
 		if (keysNeedingFetch.length > 0) {
 			if (this.#debugEnabled()) {
@@ -1277,6 +1321,14 @@ export default class TranslationObserver {
 			}
 		}
 
+		this.#applyTranslationsToPending(batch, resolved, true);
+	};
+
+	#applyTranslationsToPending(
+		batch: string[],
+		resolved: TranslationMap,
+		finalizeUnresolved: boolean
+	): void {
 		const requested = new Set(batch);
 
 		for (const [node, state] of this.#nodeStates.entries()) {
@@ -1328,7 +1380,7 @@ export default class TranslationObserver {
 				state.normalizedKey = undefined;
 				state.fragments = undefined;
 				this.#nodeStates.set(node, state);
-			} else {
+			} else if (finalizeUnresolved) {
 				state.translated = true;
 				state.lastText = currentText;
 				state.pendingSource = undefined;
@@ -1391,7 +1443,7 @@ export default class TranslationObserver {
 					attrState.normalizedKey = undefined;
 					attrState.fragments = undefined;
 					attrMap.set(attributeName, attrState);
-				} else {
+				} else if (finalizeUnresolved) {
 					attrState.translated = true;
 					attrState.lastValue = currentValue;
 					attrState.pendingSource = undefined;
@@ -1401,7 +1453,7 @@ export default class TranslationObserver {
 				}
 			}
 		}
-	};
+	}
 
 	#cleanupNode = (node: Node): void => {
 		if (node.nodeType === Node.TEXT_NODE) {

@@ -203,6 +203,70 @@ describe("TranslationObserver", () => {
 		expect(getTranslations).toHaveBeenCalled();
 	});
 
+	it("preserves source spacing around numeric placeholders", async () => {
+		document.body.innerHTML = `
+			<main data-transmut="include">
+				<p data-transmut="include">Air Pressure 140 PSI</p>
+			</main>
+		`;
+
+		const getTranslations = vi.fn(async (_locale, keys: string[]) => {
+			return Object.fromEntries(
+				keys.map((key) => [
+					key,
+					key === "Air Pressure {} PSI"
+						? "Presión de aire {}PSI"
+						: key,
+				])
+			);
+		});
+
+		observer = new TranslationObserver(
+			"en",
+			"es-MX",
+			getTranslations,
+			undefined,
+			undefined,
+			{ requireExplicitOptIn: true }
+		);
+
+		await flushAsync();
+
+		const paragraph = document.querySelector("p");
+		expect(paragraph?.textContent).toBe("Presión de aire 140 PSI");
+	});
+
+	it("does not force source spacing for compact-spacing locales", async () => {
+		document.body.innerHTML = `
+			<main data-transmut="include">
+				<p data-transmut="include">Air Pressure 140 PSI</p>
+			</main>
+		`;
+
+		const getTranslations = vi.fn(async (_locale, keys: string[]) => {
+			return Object.fromEntries(
+				keys.map((key) => [
+					key,
+					key === "Air Pressure {} PSI" ? "气压{}PSI" : key,
+				])
+			);
+		});
+
+		observer = new TranslationObserver(
+			"en",
+			"zh-CN",
+			getTranslations,
+			undefined,
+			undefined,
+			{ requireExplicitOptIn: true }
+		);
+
+		await flushAsync();
+
+		const paragraph = document.querySelector("p");
+		expect(paragraph?.textContent).toBe("气压140PSI");
+	});
+
 	it("translates opted-in attributes alongside text", async () => {
 		document.body.innerHTML = `
 			<button data-transmut="include" data-transmut-attrs="title" title="Open inbox">Open inbox</button>
@@ -314,5 +378,67 @@ describe("TranslationObserver", () => {
 		expect(paragraph?.textContent?.replace(/\s+/g, " ").trim()).toBe(
 			"Mi correo es person@example.com, sesión 550e8400-e29b-41d4-a716-446655440000, docs https://example.com/help y 12 alertas."
 		);
+	});
+
+	it("does not fetch translations when current locale matches source locale", async () => {
+		document.body.innerHTML = `
+			<main data-transmut="include">
+				<p data-transmut="include">Hello world</p>
+			</main>
+		`;
+
+		const getTranslations = vi.fn(async (_locale, keys: string[]) => {
+			return Object.fromEntries(keys.map((key) => [key, `x:${key}`]));
+		});
+
+		observer = new TranslationObserver(
+			"en-US",
+			"en-us",
+			getTranslations,
+			undefined,
+			undefined,
+			{ requireExplicitOptIn: true }
+		);
+
+		await flushAsync();
+
+		expect(getTranslations).not.toHaveBeenCalled();
+		expect(document.querySelector("p")?.textContent).toBe("Hello world");
+	});
+
+	it("does not fetch when switching back to source locale", async () => {
+		document.body.innerHTML = `
+			<main data-transmut="include">
+				<p data-transmut="include">Open inbox</p>
+			</main>
+		`;
+
+		const getTranslations = vi.fn(async (_locale, keys: string[]) => {
+			return Object.fromEntries(
+				keys.map((key) => [
+					key,
+					key === "Open inbox" ? "Abrir bandeja" : key,
+				])
+			);
+		});
+
+		observer = new TranslationObserver(
+			"en-US",
+			"es-MX",
+			getTranslations,
+			undefined,
+			undefined,
+			{ requireExplicitOptIn: true }
+		);
+
+		await flushAsync();
+		expect(document.querySelector("p")?.textContent).toBe("Abrir bandeja");
+		expect(getTranslations).toHaveBeenCalledTimes(1);
+
+		await observer.changeLocale("en", "us");
+		await flushAsync();
+
+		expect(document.querySelector("p")?.textContent).toBe("Open inbox");
+		expect(getTranslations).toHaveBeenCalledTimes(1);
 	});
 });

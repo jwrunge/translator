@@ -16,6 +16,10 @@ interface DynamicContentConfig {
 	placeholderToken?: string;
 }
 
+interface ReconstructOptions {
+	preserveNumberSourceSpacing?: boolean;
+}
+
 const NUMBER_PATTERN = /\b\d+(?:\.\d+)?\b/g;
 const DEFAULT_PLACEHOLDER_TOKEN = "{}";
 
@@ -67,9 +71,15 @@ export class DynamicContentHelper {
 				};
 			}
 
+			const previousChar = match.start > 0 ? text.charAt(match.start - 1) : "";
+			const nextChar =
+				match.end < text.length ? text.charAt(match.end) : "";
+
 			return {
 				type: "number" as const,
 				raw: match.raw,
+				hadLeadingWhitespace: /\s/.test(previousChar),
+				hadTrailingWhitespace: /\s/.test(nextChar),
 			};
 		});
 
@@ -106,21 +116,55 @@ export class DynamicContentHelper {
 		fragments: DynamicFragment[] | undefined,
 		resolveVariable: (
 			fragment: Extract<DynamicFragment, { type: "variable" }>
-		) => string | null
+		) => string | null,
+		options?: ReconstructOptions
 	): string {
 		if (!fragments || fragments.length === 0) {
 			return translatedBase;
 		}
 
+		const preserveNumberSourceSpacing =
+			options?.preserveNumberSourceSpacing ?? true;
+
 		let result = translatedBase;
 		for (const fragment of fragments) {
+			const tokenIndex = result.indexOf(this.placeholderToken);
+			if (tokenIndex === -1) {
+				break;
+			}
+
 			let replacement = fragment.raw;
 			if (fragment.type === "variable") {
 				const resolved = resolveVariable(fragment);
 				replacement = resolved ?? fragment.raw;
+			} else if (
+				fragment.type === "number" &&
+				preserveNumberSourceSpacing
+			) {
+				const beforeChar = tokenIndex > 0 ? result.charAt(tokenIndex - 1) : "";
+				const afterIndex = tokenIndex + this.placeholderToken.length;
+				const afterChar = afterIndex < result.length ? result.charAt(afterIndex) : "";
+
+				if (
+					fragment.hadLeadingWhitespace &&
+					beforeChar.length > 0 &&
+					!/\s/.test(beforeChar)
+				) {
+					replacement = ` ${replacement}`;
+				}
+
+				if (
+					fragment.hadTrailingWhitespace &&
+					afterChar.length > 0 &&
+					!/\s/.test(afterChar)
+				) {
+					replacement = `${replacement} `;
+				}
 			}
 
-			result = result.replace(this.placeholderToken, replacement);
+			const before = result.slice(0, tokenIndex);
+			const after = result.slice(tokenIndex + this.placeholderToken.length);
+			result = `${before}${replacement}${after}`;
 		}
 
 		return result;

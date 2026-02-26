@@ -73,6 +73,8 @@ export type DynamicFragment =
 	| {
 			type: "number";
 			raw: string;
+			hadLeadingWhitespace?: boolean;
+			hadTrailingWhitespace?: boolean;
 	  }
 	| {
 			type: "protected";
