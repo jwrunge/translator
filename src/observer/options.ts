@@ -65,6 +65,7 @@ export function resolveObserverOptions(
 		attributeSelector:
 			options?.attributeSelector ?? "[data-transmut-attrs]",
 		attributeNames,
+		observeOpenShadowRoots: options?.observeOpenShadowRoots ?? true,
 		skipEditable: options?.skipEditable ?? true,
 		setLanguageAttributes: options?.setLanguageAttributes ?? true,
 		direction: options?.direction ?? "auto",

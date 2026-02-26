@@ -41,6 +41,8 @@ export default class TranslationObserver {
 	#getTranslations: GetTransMapFn;
 	#debugCycle = 0;
 	#debugInitLogged = false;
+	#unresolvedRetryBaseMs = 2000;
+	#unresolvedRetryMaxMs = 30000;
 
 	constructor(
 		defaultLangCode = "en",
@@ -156,6 +158,7 @@ export default class TranslationObserver {
 
 				if (mutation.type === "childList") {
 					for (const added of mutation.addedNodes) {
+						this.#registerOpenShadowRoots(added);
 						this.#handlePotentialText(added);
 						this.#handlePotentialAttributes(added);
 					}
@@ -185,6 +188,7 @@ export default class TranslationObserver {
 		});
 
 		this.#observeRoot(rootNode);
+		this.#registerOpenShadowRoots(rootNode);
 		this.#handlePotentialText(rootNode);
 		this.#handlePotentialAttributes(rootNode);
 		const initialBatch = Array.from(this.#transBatch);
@@ -345,6 +349,20 @@ export default class TranslationObserver {
 			childList: true,
 			attributes: true,
 		});
+	}
+
+	#registerOpenShadowRoots(node: Node): void {
+		if (!this.#options.observeOpenShadowRoots) {
+			return;
+		}
+
+		if (node instanceof Element && node.shadowRoot) {
+			this.observeShadowRoot(node.shadowRoot);
+		}
+
+		for (const child of Array.from(node.childNodes)) {
+			this.#registerOpenShadowRoots(child);
+		}
 	}
 
 	#debugEnabled(): boolean {
@@ -862,8 +880,14 @@ export default class TranslationObserver {
 		}
 
 		const existing = attrMap.get(attributeName);
+		const now = Date.now();
 		if (existing?.translated && existing.lastValue === currentValue) {
-			return;
+			if (
+				typeof existing.retryAfter === "number" &&
+				existing.retryAfter > now
+			) {
+				return;
+			}
 		}
 
 		const { normalized, hasVariables, hasNumbers, hasProtected, fragments } =
@@ -886,7 +910,30 @@ export default class TranslationObserver {
 					? normalized
 					: undefined,
 			fragments: fragments.length > 0 ? fragments : undefined,
+			unresolvedAttempts:
+				existing &&
+				existing.sourceKey === translationKey &&
+				existing.lastValue === currentValue
+					? existing.unresolvedAttempts
+					: undefined,
+			retryAfter: undefined,
 		});
+	}
+
+	#nextRetryAfter(previousAttempts?: number): {
+		attempts: number;
+		retryAfter: number;
+	} {
+		const attempts = (previousAttempts ?? 0) + 1;
+		const delay = Math.min(
+			this.#unresolvedRetryBaseMs * 2 ** (attempts - 1),
+			this.#unresolvedRetryMaxMs
+		);
+
+		return {
+			attempts,
+			retryAfter: Date.now() + delay,
+		};
 	}
 
 	#getSectionLocaleInfo(element: Element): SectionLocaleDirective | null {
@@ -1166,9 +1213,15 @@ export default class TranslationObserver {
 				return;
 			}
 			const existing = this.#nodeStates.get(textNode);
+			const now = Date.now();
 
 			if (existing?.translated && existing.lastText === content) {
-				return;
+				if (
+					typeof existing.retryAfter === "number" &&
+					existing.retryAfter > now
+				) {
+					return;
+				}
 			}
 
 			if (content.length === 0) {
@@ -1201,6 +1254,13 @@ export default class TranslationObserver {
 						? normalized
 						: undefined,
 				fragments: fragments.length > 0 ? fragments : undefined,
+				unresolvedAttempts:
+					existing &&
+					existing.sourceKey === translationKey &&
+					existing.lastText === content
+						? existing.unresolvedAttempts
+						: undefined,
+				retryAfter: undefined,
 			});
 			return;
 		}
@@ -1363,7 +1423,11 @@ export default class TranslationObserver {
 			}
 
 			const translatedBase = resolved[state.pendingSource];
-			if (translatedBase && translatedBase !== currentText) {
+			const hasResolved = Object.prototype.hasOwnProperty.call(
+				resolved,
+				state.pendingSource
+			);
+			if (hasResolved && translatedBase && translatedBase !== currentText) {
 				const container = this.#getTextContainer(node);
 				const finalTranslation = state.normalizedKey
 					? this.#reconstructText(
@@ -1379,13 +1443,27 @@ export default class TranslationObserver {
 				state.pendingSource = undefined;
 				state.normalizedKey = undefined;
 				state.fragments = undefined;
+				state.unresolvedAttempts = undefined;
+				state.retryAfter = undefined;
 				this.#nodeStates.set(node, state);
-			} else if (finalizeUnresolved) {
+			} else if (hasResolved) {
 				state.translated = true;
 				state.lastText = currentText;
 				state.pendingSource = undefined;
 				state.normalizedKey = undefined;
 				state.fragments = undefined;
+				state.unresolvedAttempts = undefined;
+				state.retryAfter = undefined;
+				this.#nodeStates.set(node, state);
+			} else if (finalizeUnresolved) {
+				const retry = this.#nextRetryAfter(state.unresolvedAttempts);
+				state.translated = true;
+				state.lastText = currentText;
+				state.pendingSource = undefined;
+				state.normalizedKey = undefined;
+				state.fragments = undefined;
+				state.unresolvedAttempts = retry.attempts;
+				state.retryAfter = retry.retryAfter;
 				this.#nodeStates.set(node, state);
 			}
 		}
@@ -1427,7 +1505,11 @@ export default class TranslationObserver {
 				}
 
 				const translatedBase = resolved[attrState.pendingSource];
-				if (translatedBase && translatedBase !== currentValue) {
+				const hasResolved = Object.prototype.hasOwnProperty.call(
+					resolved,
+					attrState.pendingSource
+				);
+				if (hasResolved && translatedBase && translatedBase !== currentValue) {
 					const finalValue = attrState.normalizedKey
 						? this.#reconstructText(
 								translatedBase,
@@ -1442,13 +1524,29 @@ export default class TranslationObserver {
 					attrState.pendingSource = undefined;
 					attrState.normalizedKey = undefined;
 					attrState.fragments = undefined;
+					attrState.unresolvedAttempts = undefined;
+					attrState.retryAfter = undefined;
 					attrMap.set(attributeName, attrState);
-				} else if (finalizeUnresolved) {
+				} else if (hasResolved) {
 					attrState.translated = true;
 					attrState.lastValue = currentValue;
 					attrState.pendingSource = undefined;
 					attrState.normalizedKey = undefined;
 					attrState.fragments = undefined;
+					attrState.unresolvedAttempts = undefined;
+					attrState.retryAfter = undefined;
+					attrMap.set(attributeName, attrState);
+				} else if (finalizeUnresolved) {
+					const retry = this.#nextRetryAfter(
+						attrState.unresolvedAttempts
+					);
+					attrState.translated = true;
+					attrState.lastValue = currentValue;
+					attrState.pendingSource = undefined;
+					attrState.normalizedKey = undefined;
+					attrState.fragments = undefined;
+					attrState.unresolvedAttempts = retry.attempts;
+					attrState.retryAfter = retry.retryAfter;
 					attrMap.set(attributeName, attrState);
 				}
 			}

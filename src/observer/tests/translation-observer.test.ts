@@ -30,14 +30,29 @@ describe("TranslationObserver", () => {
 	const OriginalMutationObserver = globalThis.MutationObserver;
 
 	class TestMutationObserver implements MutationObserver {
+		static instances: TestMutationObserver[] = [];
 		readonly callback: MutationCallback;
 		constructor(callback: MutationCallback) {
 			this.callback = callback;
+			TestMutationObserver.instances.push(this);
 		}
 		observe(_target: Node, _options?: MutationObserverInit): void {}
-		disconnect(): void {}
+		disconnect(): void {
+			TestMutationObserver.instances = TestMutationObserver.instances.filter(
+				(instance) => instance !== this
+			);
+		}
 		takeRecords(): MutationRecord[] {
 			return [];
+		}
+
+		static emit(mutations: MutationRecord[]): void {
+			for (const instance of TestMutationObserver.instances) {
+				instance.callback(
+					mutations,
+					instance as unknown as MutationObserver
+				);
+			}
 		}
 	}
 
@@ -440,5 +455,93 @@ describe("TranslationObserver", () => {
 
 		expect(document.querySelector("p")?.textContent).toBe("Open inbox");
 		expect(getTranslations).toHaveBeenCalledTimes(1);
+	});
+
+	it("retries unresolved keys after cooldown on subsequent mutations", async () => {
+		document.body.innerHTML = `
+			<main data-transmut="include">
+				<p data-transmut="include">Labs</p>
+			</main>
+		`;
+
+		let currentTime = 1_000;
+		const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => currentTime);
+		const getTranslations = vi
+			.fn()
+			.mockImplementationOnce(async () => ({}))
+			.mockImplementationOnce(async () => ({ Labs: "实验室" }));
+
+		observer = new TranslationObserver(
+			"en",
+			"zh-CN",
+			getTranslations,
+			undefined,
+			undefined,
+			{ requireExplicitOptIn: true }
+		);
+
+		await flushAsync();
+		expect(getTranslations).toHaveBeenCalledTimes(1);
+		expect(document.querySelector("p")?.textContent).toBe("Labs");
+
+		const textNode = document.querySelector("p")?.firstChild as Text;
+		TestMutationObserver.emit([
+			{
+				type: "characterData",
+				target: textNode,
+				addedNodes: [] as unknown as NodeList,
+				removedNodes: [] as unknown as NodeList,
+				attributeName: null,
+				attributeNamespace: null,
+				oldValue: "Labs",
+				nextSibling: null,
+				previousSibling: null,
+			} as MutationRecord,
+		]);
+		await flushAsync();
+		expect(getTranslations).toHaveBeenCalledTimes(1);
+
+		currentTime += 2_500;
+		TestMutationObserver.emit([
+			{
+				type: "characterData",
+				target: textNode,
+				addedNodes: [] as unknown as NodeList,
+				removedNodes: [] as unknown as NodeList,
+				attributeName: null,
+				attributeNamespace: null,
+				oldValue: "Labs",
+				nextSibling: null,
+				previousSibling: null,
+			} as MutationRecord,
+		]);
+		await flushAsync();
+
+		expect(getTranslations).toHaveBeenCalledTimes(2);
+		expect(document.querySelector("p")?.textContent).toBe("实验室");
+		nowSpy.mockRestore();
+	});
+
+	it("auto-observes open shadow roots and translates their text", async () => {
+		const host = document.createElement("div");
+		host.attachShadow({ mode: "open" });
+		host.shadowRoot!.innerHTML = `<p>Clean Mix</p>`;
+		document.body.appendChild(host);
+
+		const getTranslations = vi.fn(async (_locale, keys: string[]) => {
+			return Object.fromEntries(
+				keys.map((key) => [
+					key,
+					key === "Clean Mix" ? "清洁混合" : key,
+				])
+			);
+		});
+
+		observer = new TranslationObserver("en", "zh-CN", getTranslations);
+
+		await flushAsync();
+
+		expect(host.shadowRoot?.querySelector("p")?.textContent).toBe("清洁混合");
+		expect(getTranslations).toHaveBeenCalled();
 	});
 });

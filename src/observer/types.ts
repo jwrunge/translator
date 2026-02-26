@@ -13,6 +13,7 @@ export interface TranslationObserverOptions {
 	textSelector?: string | null;
 	attributeSelector?: string | null;
 	attributeNames?: string[];
+	observeOpenShadowRoots?: boolean;
 	skipEditable?: boolean;
 	setLanguageAttributes?: boolean;
 	direction?: DirectionSetting;
@@ -27,6 +28,7 @@ export interface ResolvedObserverOptions {
 	textSelector: string | null;
 	attributeSelector: string | null;
 	attributeNames: string[];
+	observeOpenShadowRoots: boolean;
 	skipEditable: boolean;
 	setLanguageAttributes: boolean;
 	direction: DirectionSetting;
@@ -45,6 +47,8 @@ export interface AttributeState {
 	pendingSource?: string;
 	normalizedKey?: string;
 	fragments?: DynamicFragment[];
+	unresolvedAttempts?: number;
+	retryAfter?: number;
 }
 
 export interface SectionLocaleDirective {
@@ -62,6 +66,8 @@ export interface NodeState {
 	pendingSource?: string;
 	normalizedKey?: string;
 	fragments?: DynamicFragment[];
+	unresolvedAttempts?: number;
+	retryAfter?: number;
 }
 
 export type DynamicFragment =
