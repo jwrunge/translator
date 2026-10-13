@@ -164,6 +164,14 @@ export default class TranslationObserver {
 					}
 
 					for (const removed of mutation.removedNodes) {
+						// A move is reported as a removal plus an insertion. A
+						// node that is still connected was moved, not removed:
+						// dropping its state would make its translated text
+						// look like untranslated source, which then gets sent
+						// for translation and kept as the node's source.
+						if (removed.isConnected) {
+							continue;
+						}
 						this.#cleanupNode(removed);
 					}
 					continue;

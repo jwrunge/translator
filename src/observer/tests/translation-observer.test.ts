@@ -522,6 +522,137 @@ describe("TranslationObserver", () => {
 		nowSpy.mockRestore();
 	});
 
+	it("keeps a translated node's source when the node is moved", async () => {
+		document.body.innerHTML = `
+			<main data-transmut="include">
+				<ul><li>Settings</li><li>Fields</li></ul>
+				<input placeholder="Search fields" data-transmut-attrs="placeholder" />
+				<section></section>
+			</main>
+		`;
+
+		const dictionary: Record<string, string> = {
+			Settings: "Ajustes",
+			Fields: "Campos",
+			"Search fields": "Buscar campos",
+		};
+		const getTranslations = vi.fn(async (_locale, keys: string[]) =>
+			Object.fromEntries(
+				keys.flatMap((key) =>
+					key in dictionary ? [[key, dictionary[key]]] : []
+				)
+			)
+		);
+
+		observer = new TranslationObserver(
+			"en-US",
+			"es-MX",
+			getTranslations,
+			undefined,
+			undefined,
+			{ requireExplicitOptIn: true }
+		);
+
+		await flushAsync();
+
+		const list = document.querySelector("ul") as HTMLUListElement;
+		const first = list.firstElementChild as HTMLLIElement;
+		const input = document.querySelector("input") as HTMLInputElement;
+		const section = document.querySelector("section") as HTMLElement;
+		expect(first.textContent).toBe("Ajustes");
+		expect(input.placeholder).toBe("Buscar campos");
+
+		const requestedKeys = () =>
+			getTranslations.mock.calls.flatMap(([, keys]) => keys);
+		const moveRecords = (
+			node: Node,
+			from: Node,
+			to: Node
+		): MutationRecord[] =>
+			[
+				{ target: from, addedNodes: [], removedNodes: [node] },
+				{ target: to, addedNodes: [node], removedNodes: [] },
+			].map(
+				(record) =>
+					({
+						type: "childList",
+						attributeName: null,
+						attributeNamespace: null,
+						oldValue: null,
+						nextSibling: null,
+						previousSibling: null,
+						...record,
+					}) as unknown as MutationRecord
+			);
+
+		// What a keyed list does when its order changes.
+		list.appendChild(first);
+		TestMutationObserver.emit(moveRecords(first, list, list));
+		section.appendChild(input);
+		TestMutationObserver.emit(
+			moveRecords(input, input.parentNode as Node, section)
+		);
+		await flushAsync();
+
+		expect(requestedKeys()).not.toContain("Ajustes");
+		expect(requestedKeys()).not.toContain("Buscar campos");
+		expect(first.textContent).toBe("Ajustes");
+
+		await observer.changeLocale("en", "us");
+		await flushAsync();
+
+		expect(first.textContent).toBe("Settings");
+		expect(input.placeholder).toBe("Search fields");
+	});
+
+	it("forgets a node that really left the document", async () => {
+		document.body.innerHTML = `
+			<main data-transmut="include"><p>Settings</p></main>
+		`;
+
+		const getTranslations = vi.fn(async (_locale, keys: string[]) =>
+			Object.fromEntries(
+				keys.map((key) => [key, key === "Settings" ? "Ajustes" : key])
+			)
+		);
+
+		observer = new TranslationObserver(
+			"en-US",
+			"es-MX",
+			getTranslations,
+			undefined,
+			undefined,
+			{ requireExplicitOptIn: true }
+		);
+
+		await flushAsync();
+
+		const main = document.querySelector("main") as HTMLElement;
+		const paragraph = document.querySelector("p") as HTMLParagraphElement;
+		expect(paragraph.textContent).toBe("Ajustes");
+
+		paragraph.remove();
+		TestMutationObserver.emit([
+			{
+				type: "childList",
+				target: main,
+				addedNodes: [] as unknown as NodeList,
+				removedNodes: [paragraph] as unknown as NodeList,
+				attributeName: null,
+				attributeNamespace: null,
+				oldValue: null,
+				nextSibling: null,
+				previousSibling: null,
+			} as MutationRecord,
+		]);
+
+		// Its state is gone, so a locale reset has nothing to restore on it.
+		await observer.changeLocale("en", "us");
+		await flushAsync();
+
+		expect(paragraph.textContent).toBe("Ajustes");
+	});
+
 	it("auto-observes open shadow roots and translates their text", async () => {
 		const host = document.createElement("div");
 		host.attachShadow({ mode: "open" });
